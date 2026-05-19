@@ -326,7 +326,7 @@ let hubRedActive = true, hubBlueActive = true, currentPhaseIdx = -1;
 let sameTeamMode = false; 
 let p2Enabled = true;
 let p1Input = 'keyboard';
-let p2Input = 'controller';
+let p2Input = 'keyboard2';
 let p1StartIdx = 0, p2StartIdx = 0;
 let p1UnstickUsed = false, p2UnstickUsed = false;
 let p1FreezeUntil = 0, p2FreezeUntil = 0;
@@ -759,10 +759,19 @@ function getInputs(type, gpIdx) {
     if (startCountdown > 0 || endCooldown > 0) return {x, y, rot, act, toggleIn};
     if (type === 'keyboard') {
         if (keys['KeyW']) y = -1; if (keys['KeyS']) y = 1; if (keys['KeyA']) x = -1; if (keys['KeyD']) x = 1;
-        if (keys['KeyJ'] || keys['ArrowLeft']) rot = -1; if (keys['KeyL'] || keys['ArrowRight']) rot = 1; 
+        if (keys['KeyQ']) rot = -1; if (keys['KeyE']) rot = 1;
         if (keys['Space']) act = true;
+        if (keys['KeyX']) toggleIn = true;
+    }
+
+    else if (type === 'keyboard2') {
+        if (keys['ArrowUp']) y = -1; if (keys['ArrowDown']) y = 1; if (keys['ArrowLeft']) x = -1; if (keys['ArrowRight']) x = 1;
+        if (keys['KeyN']) rot = -1; if (keys['KeyM']) rot = 1;
+        if (keys['ShiftRight']) act = true;
         if (keys['KeyE']) toggleIn = true;
-    } else if (type === 'controller') {
+    }
+
+    else if (type === 'controller') {
         let gp = navigator.getGamepads()[gpIdx];
         if (gp && matchRunning) {
             if (gp.axes.length>0 && Math.abs(gp.axes[0])>0.15) x = gp.axes[0]; 
@@ -778,7 +787,7 @@ function getInputs(type, gpIdx) {
 
 function update() {
     tickMatch(); updateHudBar(); const now = Date.now();
-    let p1State = getInputs(p1Input, 0); let p2State = getInputs(p2Input, p1Input === 'controller' ? 1 : 0);
+    let p1State = getInputs(p1Input, 0); let p2State = getInputs(p2Input, p1Input === 'keyboard2' ? 1 : 0);
 
     // Apply the unstick freeze penalty
     if (now < p1FreezeUntil) { p1State = {x: 0, y: 0, rot: 0, act: false, toggleIn: false}; }
@@ -1057,8 +1066,8 @@ document.getElementById('team-mode-toggle').onclick = function() {
     
     document.getElementById('reset-btn').click();
 };
-document.getElementById('p1-input-toggle').onclick = function() { p1Input = p1Input === 'keyboard' ? 'controller' : 'keyboard'; this.innerText = "P1: " + p1Input.toUpperCase(); };
-document.getElementById('p2-input-toggle').onclick = function() { p2Input = p2Input === 'keyboard' ? 'controller' : 'keyboard'; this.innerText = "P2: " + p2Input.toUpperCase(); };
+document.getElementById('p1-input-toggle').onclick = function() { p1Input = p1Input === 'keyboard' ? 'keyboard2' : 'keyboard'; this.innerText = "P1: " + p1Input.toUpperCase(); };
+document.getElementById('p2-input-toggle').onclick = function() { p2Input = p2Input === 'keyboard' ? 'keyboard2' : 'keyboard'; this.innerText = "P2: " + p2Input.toUpperCase(); };
 
 document.getElementById('p2-toggle').onclick = () => {
     p2Enabled = !p2Enabled; let btn = document.getElementById('p2-toggle');
