@@ -253,8 +253,8 @@
         <div style="height: 5px;"></div>
         
         <button id="p2-toggle" class="purple-team">PLAYER 2: ON</button>
-        <button id="bot-blue-toggle" class="blue-team">PLAYER 2: double turret</button>
-        <button id="p2-input-toggle" class="blue-team">P2: CONTROLLER</button>
+        <button id="bot-blue-toggle" class="blue-team">PLAYER 2: turret</button>
+        <button id="p2-input-toggle" class="blue-team">P2: KEYBOARD2</button>
         <button id="p2-start-toggle" class="blue-team">P2 START: HUB</button>
         <button id="p2-unstick" class="blue-team btn-unstick disabled">P2 UNSTICK (1)</button>
         
@@ -356,35 +356,55 @@ let gamepadStatusDiv = null;
 const START_LABELS = ['HUB', 'TOP TRENCH', 'BOT TRENCH'];
 
 function handleGamepadConnected(e) {
-    console.log(`Gamepad ${e.gamepad.index} connected: ${e.gamepad.id}`);
     gamepads[e.gamepad.index] = e.gamepad;
     updateGamepadStatusUI();
 }
 
 function handleGamepadDisconnected(e) {
-    console.log(`Gamepad ${e.gamepad.index} disconnected`);
     gamepads[e.gamepad.index] = null;
     updateGamepadStatusUI();
 }
 
 function updateGamepadStatusUI() {
     if (!gamepadStatusDiv) {
-        // Create a simple status display if not exists
-        const controlsWrapper = document.querySelector('.controls-wrapper');
-        if (controlsWrapper) {
+        const wrapper = document.querySelector('.controls-wrapper');
+        if (wrapper) {
             gamepadStatusDiv = document.createElement('div');
             gamepadStatusDiv.style.marginTop = '8px';
             gamepadStatusDiv.style.fontSize = '0.7rem';
             gamepadStatusDiv.style.color = '#aaa';
-            gamepadStatusDiv.style.textAlign = 'center';
-            controlsWrapper.insertBefore(gamepadStatusDiv, controlsWrapper.firstChild);
-        } else {
-            return;
-        }
+            wrapper.insertBefore(gamepadStatusDiv, wrapper.firstChild);
+        } else return;
     }
-    const connectedIndices = gamepads.map((gp, idx) => gp ? `🎮 ${idx}: ${gp.id.substring(0, 20)}` : `❌ ${idx}: none`).join(' | ');
-    gamepadStatusDiv.innerHTML = `Gamepads: ${connectedIndices}<br>
-                                  P1 uses index ${p1GamepadIndex} | P2 uses index ${p2GamepadIndex}`;
+    const connected = gamepads.map((gp, i) => gp ? `🎮 ${i}` : `❌ ${i}`).join(' ');
+    gamepadStatusDiv.innerHTML = `Gamepads: ${connected}<br>P1 uses index ${p1GamepadIndex} | P2 uses index ${p2GamepadIndex}`;
+}
+
+function addGamepadAssignButtons() {
+    const panel = document.getElementById('control-panel');
+    if (!panel || document.getElementById('p1-gamepad-assign')) return;
+    const p1Btn = document.createElement('button');
+    p1Btn.id = 'p1-gamepad-assign';
+    p1Btn.className = 'red-team';
+    p1Btn.innerHTML = `P1 Gamepad: ${p1GamepadIndex}`;
+    p1Btn.onclick = () => {
+        p1GamepadIndex = (p1GamepadIndex + 1) % 4;
+        p1Btn.innerHTML = `P1 Gamepad: ${p1GamepadIndex}`;
+        updateGamepadStatusUI();
+    };
+    const p2Btn = document.createElement('button');
+    p2Btn.id = 'p2-gamepad-assign';
+    p2Btn.className = 'blue-team';
+    p2Btn.innerHTML = `P2 Gamepad: ${p2GamepadIndex}`;
+    p2Btn.onclick = () => {
+        p2GamepadIndex = (p2GamepadIndex + 1) % 4;
+        p2Btn.innerHTML = `P2 Gamepad: ${p2GamepadIndex}`;
+        updateGamepadStatusUI();
+    };
+    const p1InputBtn = document.getElementById('p1-input-toggle');
+    if (p1InputBtn) p1InputBtn.parentNode.insertBefore(p1Btn, p1InputBtn.nextSibling);
+    const p2InputBtn = document.getElementById('p2-input-toggle');
+    if (p2InputBtn) p2InputBtn.parentNode.insertBefore(p2Btn, p2InputBtn.nextSibling);
 }
 
 function formatTime(s) {
@@ -874,7 +894,7 @@ function circleRectCollision(c, r) {
     if (distSq < c.r*c.r) { let dist = Math.sqrt(distSq); if (dist === 0) { dx = 1; dy = 0; dist = 1; } return { hit: true, nx: dx/dist, ny: dy/dist, overlap: c.r - dist }; } return { hit: false };
 }
 
-function getInputs(type, playerId) {  // playerId is 0 for P1, 1 for P2
+function getInputs(type, playerId) {   // playerId: 0 for P1, 1 for P2
     let x=0, y=0, rot=0, act=false, toggleIn=false;
     if (startCountdown > 0 || endCooldown > 0) return {x, y, rot, act, toggleIn};
 
@@ -891,37 +911,29 @@ function getInputs(type, playerId) {  // playerId is 0 for P1, 1 for P2
         if (keys['KeyE']) toggleIn = true;
     }
     else if (type === 'controller') {
-        // Choose which gamepad index based on playerId
+        // Choose which gamepad index based on player
         const gpIdx = (playerId === 0) ? p1GamepadIndex : p2GamepadIndex;
-        // Refresh gamepad state
         const gp = navigator.getGamepads ? navigator.getGamepads()[gpIdx] : null;
         if (!gp) return {x, y, rot, act, toggleIn};
 
-        // Movement - Left Stick (axes 0,1)
         if (gp.axes.length > 1) {
             x = gp.axes[0] || 0;
             y = gp.axes[1] || 0;
         }
-        // Rotation - Right Stick X (axes 2)
         if (gp.axes.length > 2) {
             rot = gp.axes[2] || 0;
         }
-        // Optionally use Right Stick Y as secondary rotation? Not needed.
-
-        // Deadzone
         const deadzone = 0.18;
         if (Math.abs(x) < deadzone) x = 0;
         if (Math.abs(y) < deadzone) y = 0;
         if (Math.abs(rot) < deadzone) rot = 0;
 
         const b = gp.buttons;
-        // Shoot / Pass: Right Trigger (index 7) or any face button (0-3)
         const rightTrigger = (b[7] && b[7].value) || 0;
         const faceButton = (b[0] && b[0].pressed) || (b[1] && b[1].pressed) ||
                           (b[2] && b[2].pressed) || (b[3] && b[3].pressed);
         act = rightTrigger > 0.3 || faceButton;
 
-        // Intake side toggle: Left Trigger (index 6)
         const leftTrigger = (b[6] && b[6].value) || 0;
         toggleIn = leftTrigger > 0.5;
     }
@@ -938,30 +950,22 @@ function getInputs(type, playerId) {  // playerId is 0 for P1, 1 for P2
 // Since you didn't show the full update() here, I'll assume you modify it.
 
 // --- ADD EVENT LISTENERS AND INITIALIZATION for gamepads ---
+// Event listeners
 window.addEventListener('gamepadconnected', handleGamepadConnected);
 window.addEventListener('gamepaddisconnected', handleGamepadDisconnected);
-// Call updateGamepadStatusUI periodically to refresh button labels and gamepad list
+// Poll for gamepad state and add buttons on load
 setInterval(() => {
-    // Request fresh gamepad states
     const gps = navigator.getGamepads();
     for (let i = 0; i < gps.length; i++) {
-        if (gps[i] && (!gamepads[i] || gamepads[i].id !== gps[i].id)) {
-            gamepads[i] = gps[i];
-        } else if (!gps[i] && gamepads[i]) {
-            gamepads[i] = null;
-        }
+        if (gps[i] && (!gamepads[i] || gamepads[i].id !== gps[i].id)) gamepads[i] = gps[i];
+        else if (!gps[i] && gamepads[i]) gamepads[i] = null;
     }
     updateGamepadStatusUI();
 }, 500);
-
-// Call this after DOM is ready to add assignment buttons
 window.addEventListener('DOMContentLoaded', () => {
-    addGamepadAssignmentButtons();
-    // Also initially scan for existing gamepads
+    addGamepadAssignButtons();
     const gps = navigator.getGamepads();
-    for (let i = 0; i < gps.length; i++) {
-        if (gps[i]) gamepads[i] = gps[i];
-    }
+    for (let i = 0; i < gps.length; i++) if (gps[i]) gamepads[i] = gps[i];
     updateGamepadStatusUI();
 });
 
