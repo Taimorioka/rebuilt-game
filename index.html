@@ -285,14 +285,14 @@ function playSound(key) {
 
 /** 2. CONFIG & MODELS **/
 const BOT_MODELS = {
-    'turret': { accel: 0.38, rotSpeed: 0.05, capacity: 105, fireRate: 70, w: 35, h: 35 },
-    'Miss Daisy': { accel: 0.38, rotSpeed: 0.05, capacity: 8, fireRate: 85, w: 35, h: 35 },
-    'double turret':  { accel: 0.38, rotSpeed: 0.05, capacity: 60, fireRate: 60, w: 35, h: 35 },
-    'dumper':  { accel: 0.38, rotSpeed: 0.045, capacity: 110, fireRate: 0, w: 35, h: 35 },
-    'Blitz':  { accel: 0.38, rotSpeed: 0.05, capacity: 15, fireRate: 0, w: 35, h: 35 },
-    '2910':  { accel: 0.38, rotSpeed: 0.05, capacity: 62, fireRate: -0, w: 35, h: 35 },
-    '3636': { accel: 0.38, rotSpeed: 0.036, capacity: 50, fireRate: 180, w: 35, h: 35 },
-    '3636 main season': { accel: 0.36, rotSpeed: 0.036, capacity: 20, fireRate: 500, w: 35, h: 35 },
+    'turret': { accel: 0.38, rotSpeed: 0.036, capacity: 105, fireRate: 70, w: 41, h: 41 },
+    'Miss Daisy': { accel: 0.38, rotSpeed: 0.036, capacity: 8, fireRate: 85, w: 41, h: 41 },
+    'double turret':  { accel: 0.38, rotSpeed: 0.036, capacity: 60, fireRate: 60, w: 41, h: 41 },
+    'dumper':  { accel: 0.38, rotSpeed: 0.036, capacity: 110, fireRate: 0, w: 41, h: 41 },
+    'Blitz':  { accel: 0.38, rotSpeed: 0.036, capacity: 15, fireRate: 0, w: 41, h: 41 },
+    '2910':  { accel: 0.38, rotSpeed: 0.036, capacity: 62, fireRate: -0, w: 41, h: 41 },
+    '3636': { accel: 0.38, rotSpeed: 0.036, capacity: 50, fireRate: 180, w: 41, h: 41 },
+    '3636 main season': { accel: 0.36, rotSpeed: 0.036, capacity: 20, fireRate: 500, w: 41, h: 41 },
 };
 
 const S = 1.6; 
@@ -581,8 +581,8 @@ class Robot {
 
         let speedMod = inDepot ? 0.65 : 1.0;
         let passSpeedDampen = this.name === 'Blitz' ? 0.60 : (this.name === 'dumper' ? 0.25 : (this.name === '2910' ? 0.25 : (this.name === '3636' ? 0.8 : (this.name === '3636 main season' ? 1.0 : 0.50))));
-        this.vx += moveX * (onBump ? 0.15 : (this.model.accel * speedMod * (isActionActive ? passSpeedDampen : 1.0)));
-        this.vy += moveY * (onBump ? 0.15 : (this.model.accel * speedMod * (isActionActive ? passSpeedDampen : 1.0)));
+        this.vx += moveX * (onBump ? 0.18 : (this.model.accel * speedMod * (isActionActive ? passSpeedDampen : 1.0)));
+        this.vy += moveY * (onBump ? 0.18 : (this.model.accel * speedMod * (isActionActive ? passSpeedDampen : 1.0)));
 
         let isLockedOn = true;
 
