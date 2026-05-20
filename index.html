@@ -349,7 +349,43 @@ let p2Input = 'keyboard2';
 let p1StartIdx = 0, p2StartIdx = 0;
 let p1UnstickUsed = false, p2UnstickUsed = false;
 let p1FreezeUntil = 0, p2FreezeUntil = 0;
+let gamepads = [null, null];
+let p1GamepadIndex = 0;
+let p2GamepadIndex = 1;
+let gamepadStatusDiv = null;
 const START_LABELS = ['HUB', 'TOP TRENCH', 'BOT TRENCH'];
+
+function handleGamepadConnected(e) {
+    console.log(`Gamepad ${e.gamepad.index} connected: ${e.gamepad.id}`);
+    gamepads[e.gamepad.index] = e.gamepad;
+    updateGamepadStatusUI();
+}
+
+function handleGamepadDisconnected(e) {
+    console.log(`Gamepad ${e.gamepad.index} disconnected`);
+    gamepads[e.gamepad.index] = null;
+    updateGamepadStatusUI();
+}
+
+function updateGamepadStatusUI() {
+    if (!gamepadStatusDiv) {
+        // Create a simple status display if not exists
+        const controlsWrapper = document.querySelector('.controls-wrapper');
+        if (controlsWrapper) {
+            gamepadStatusDiv = document.createElement('div');
+            gamepadStatusDiv.style.marginTop = '8px';
+            gamepadStatusDiv.style.fontSize = '0.7rem';
+            gamepadStatusDiv.style.color = '#aaa';
+            gamepadStatusDiv.style.textAlign = 'center';
+            controlsWrapper.insertBefore(gamepadStatusDiv, controlsWrapper.firstChild);
+        } else {
+            return;
+        }
+    }
+    const connectedIndices = gamepads.map((gp, idx) => gp ? `🎮 ${idx}: ${gp.id.substring(0, 20)}` : `❌ ${idx}: none`).join(' | ');
+    gamepadStatusDiv.innerHTML = `Gamepads: ${connectedIndices}<br>
+                                  P1 uses index ${p1GamepadIndex} | P2 uses index ${p2GamepadIndex}`;
+}
 
 function formatTime(s) {
     s = Math.max(0, Math.ceil(s));
@@ -838,39 +874,39 @@ function circleRectCollision(c, r) {
     if (distSq < c.r*c.r) { let dist = Math.sqrt(distSq); if (dist === 0) { dx = 1; dy = 0; dist = 1; } return { hit: true, nx: dx/dist, ny: dy/dist, overlap: c.r - dist }; } return { hit: false };
 }
 
-function getInputs(type, gpIdx) {
+function getInputs(type, playerId) {  // playerId is 0 for P1, 1 for P2
     let x=0, y=0, rot=0, act=false, toggleIn=false;
     if (startCountdown > 0 || endCooldown > 0) return {x, y, rot, act, toggleIn};
+
     if (type === 'keyboard') {
         if (keys['KeyW']) y = -1; if (keys['KeyS']) y = 1; if (keys['KeyA']) x = -1; if (keys['KeyD']) x = 1;
         if (keys['KeyQ']) rot = -1; if (keys['KeyE']) rot = 1;
         if (keys['Space']) act = true;
         if (keys['KeyX']) toggleIn = true;
     }
-
     else if (type === 'keyboard2') {
         if (keys['ArrowUp']) y = -1; if (keys['ArrowDown']) y = 1; if (keys['ArrowLeft']) x = -1; if (keys['ArrowRight']) x = 1;
         if (keys['KeyN']) rot = -1; if (keys['KeyM']) rot = 1;
         if (keys['ShiftRight']) act = true;
         if (keys['KeyE']) toggleIn = true;
     }
-
     else if (type === 'controller') {
-        const gp = navigator.getGamepads()[gpIdx];
+        // Choose which gamepad index based on playerId
+        const gpIdx = (playerId === 0) ? p1GamepadIndex : p2GamepadIndex;
+        // Refresh gamepad state
+        const gp = navigator.getGamepads ? navigator.getGamepads()[gpIdx] : null;
         if (!gp) return {x, y, rot, act, toggleIn};
 
-        // Movement - Left Stick
+        // Movement - Left Stick (axes 0,1)
         if (gp.axes.length > 1) {
             x = gp.axes[0] || 0;
             y = gp.axes[1] || 0;
         }
-
-        // Rotation - Right Stick (X axis is most common)
-        if (gp.axes.length > 3) {
-            rot = gp.axes[2] || 0;           // Right stick X
-            // Optional: you can also support Right stick Y if desired
-            // rot = gp.axes[2] || gp.axes[3] || 0;
+        // Rotation - Right Stick X (axes 2)
+        if (gp.axes.length > 2) {
+            rot = gp.axes[2] || 0;
         }
+        // Optionally use Right Stick Y as secondary rotation? Not needed.
 
         // Deadzone
         const deadzone = 0.18;
@@ -879,21 +915,55 @@ function getInputs(type, gpIdx) {
         if (Math.abs(rot) < deadzone) rot = 0;
 
         const b = gp.buttons;
-
-        // Shoot / Pass (Right Trigger or A/X button)
-        const rightTrigger = (b[7] && b[7].value) || (b[5] && b[5].value) || 0;
+        // Shoot / Pass: Right Trigger (index 7) or any face button (0-3)
+        const rightTrigger = (b[7] && b[7].value) || 0;
         const faceButton = (b[0] && b[0].pressed) || (b[1] && b[1].pressed) ||
                           (b[2] && b[2].pressed) || (b[3] && b[3].pressed);
-
         act = rightTrigger > 0.3 || faceButton;
 
-        // Intake side toggle (Left Trigger)
+        // Intake side toggle: Left Trigger (index 6)
         const leftTrigger = (b[6] && b[6].value) || 0;
         toggleIn = leftTrigger > 0.5;
     }
-
     return {x, y, rot, act, toggleIn};
 }
+
+// --- MODIFY THE UPDATE LOOP CALLS to pass playerId correctly ---
+// In the update() function, replace the two getInputs lines with:
+/*
+    let p1State = getInputs(p1Input, 0);
+    let p2State = getInputs(p2Input, 1);
+*/
+// Also in the draw() or any other place, ensure playerId is passed.
+// Since you didn't show the full update() here, I'll assume you modify it.
+
+// --- ADD EVENT LISTENERS AND INITIALIZATION for gamepads ---
+window.addEventListener('gamepadconnected', handleGamepadConnected);
+window.addEventListener('gamepaddisconnected', handleGamepadDisconnected);
+// Call updateGamepadStatusUI periodically to refresh button labels and gamepad list
+setInterval(() => {
+    // Request fresh gamepad states
+    const gps = navigator.getGamepads();
+    for (let i = 0; i < gps.length; i++) {
+        if (gps[i] && (!gamepads[i] || gamepads[i].id !== gps[i].id)) {
+            gamepads[i] = gps[i];
+        } else if (!gps[i] && gamepads[i]) {
+            gamepads[i] = null;
+        }
+    }
+    updateGamepadStatusUI();
+}, 500);
+
+// Call this after DOM is ready to add assignment buttons
+window.addEventListener('DOMContentLoaded', () => {
+    addGamepadAssignmentButtons();
+    // Also initially scan for existing gamepads
+    const gps = navigator.getGamepads();
+    for (let i = 0; i < gps.length; i++) {
+        if (gps[i]) gamepads[i] = gps[i];
+    }
+    updateGamepadStatusUI();
+});
 
 function getOBB(robot) {
     const center = { x: robot.x + robot.model.w/2, y: robot.y + robot.model.h/2 };
@@ -1270,7 +1340,7 @@ function draw() {
     ctx.fillStyle = "#fbbf24"; balls.forEach(b => { ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, Math.PI*2); ctx.fill(); });
     projectiles.forEach(p => { ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI*2); ctx.fill(); });
 
-    // ⚠️ Show warning if a robot is too full to go under the trench (inventory >= 85)
+    // Show warning if a robot is too full to go under the trench
     const robots = p2Enabled ? [botRed, botBlue] : [botRed];
     for (let bot of robots) {
         if (bot.inventory >= 85) {  // ← Corrected condition
