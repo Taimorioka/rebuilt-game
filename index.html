@@ -785,9 +785,9 @@ class Robot {
             }
         } else {
             ctx.fillStyle = "#fbbf24";
-            let bY = (this.name === 'dumper' || this.name === '2910') ? -14 : -12.5;
+            let bY = (this.name === 'dumper' || this.name === '2910') ? -19 : -17.5;
             let bW = (this.name === 'dumper' || this.name === '2910') ? 5 : 6;
-            let bH = (this.name === 'dumper' || this.name === '2910') ? 28 : 25;
+            let bH = (this.name === 'dumper' || this.name === '2910') ? 38 : 35;
             ctx.fillRect(this.model.w/2 - 2, bY, bW, bH);
         }
 
@@ -1249,8 +1249,8 @@ function update() {
                 ix = (bot.x+bot.model.w/2) + Math.cos(bot.angle + intakeAngleOffset)*(bot.model.w/2+5);
                 iy = (bot.y+bot.model.h/2) + Math.sin(bot.angle + intakeAngleOffset)*(bot.model.w/2+5);
             } else {
-                ix = (bot.x+bot.model.w/2) + Math.cos(bot.angle)*(bot.model.w/2+5);
-                iy = (bot.y+bot.model.h/2) + Math.sin(bot.angle)*(bot.model.w/2+5);
+                ix = (bot.x+bot.model.w/2) + Math.cos(bot.angle)*(bot.model.w/2+10);
+                iy = (bot.y+bot.model.h/2) + Math.sin(bot.angle)*(bot.model.w/2+10);
             }
 
             if (Math.hypot(b.x-ix, b.y-iy)<9 && bot.inventory<bot.model.capacity) { bot.inventory++; document.getElementById(alliance==='red'?'heldRed':'heldBlue').innerText = bot.inventory; return false; }
