@@ -268,12 +268,13 @@ function playSound(key) {
 /** 2. CONFIG & MODELS **/
 const BOT_MODELS = {
     'turret': { accel: 0.38, rotSpeed: 0.05, capacity: 105, fireRate: 70, w: 35, h: 35 },
-    '3636': { accel: 0.38, rotSpeed: 0.036, capacity: 50, fireRate: 180, w: 35, h: 35 },
-    '3636 main season': { accel: 0.36, rotSpeed: 0.036, capacity: 20, fireRate: 500, w: 35, h: 35 },
     'Miss Daisy': { accel: 0.38, rotSpeed: 0.05, capacity: 8, fireRate: 85, w: 35, h: 35 },
     'double turret':  { accel: 0.38, rotSpeed: 0.05, capacity: 60, fireRate: 60, w: 35, h: 35 },
     'dumper':  { accel: 0.38, rotSpeed: 0.045, capacity: 110, fireRate: 0, w: 35, h: 35 },
-    'Blitz':  { accel: 0.38, rotSpeed: 0.05, capacity: 15, fireRate: 0, w: 35, h: 35 } 
+    'Blitz':  { accel: 0.38, rotSpeed: 0.05, capacity: 15, fireRate: 0, w: 35, h: 35 },
+    '2910':  { accel: 0.38, rotSpeed: 0.05, capacity: 62, fireRate: -0, w: 35, h: 35 },
+    '3636': { accel: 0.38, rotSpeed: 0.036, capacity: 50, fireRate: 180, w: 35, h: 35 },
+    '3636 main season': { accel: 0.36, rotSpeed: 0.036, capacity: 20, fireRate: 500, w: 35, h: 35 },
 };
 
 const S = 1.6; 
@@ -449,6 +450,7 @@ class Robot {
         this.angle = startingAngle; this.vAngle = 0;
         this.inventory = 0; this.lastShot = 0; this.streamCooldowns = [0, 0, 0, 0]; 
         this.setModel(modelKey);
+        this.disruptedUntil = 0;
     }
 
     setModel(key) { 
@@ -460,121 +462,162 @@ class Robot {
         this.prevIntakeInput = false;
     }
 
-    update(moveX, moveY, rotInput, rawActInput, rawToggleInput, alliance, obstacles, zones) {
+    update(moveX, moveY, rotInput, rawActInput, rawToggleInput, alliance, obstacles, zones, otherBot = null) {
         if (isNaN(this.x) || isNaN(this.y) || isNaN(this.vx) || isNaN(this.vy)) {
             this.x = alliance === 'red' ? 80 : FIELD_W - 115;
             this.y = FIELD_H/2 - 14; this.vx = 0; this.vy = 0; this.vAngle = 0;
         }
-        
+
         let isActionActive = rawActInput;
 
-        // Process custom input logic for Blitz
+        // Blitz intake toggle
         if (this.name === 'Blitz') {
-            // Intake Side Toggle (Edge detection)
             if (rawToggleInput && !this.prevIntakeInput) {
                 this.intakeSide = this.intakeSide === 'right' ? 'left' : 'right';
             }
             this.prevIntakeInput = rawToggleInput;
         }
 
-        if (matchRunning && currentPhaseIdx === 1) { 
+        if (matchRunning && currentPhaseIdx === 1) {
             this.vx *= 0.5; this.vy *= 0.5; this.vAngle *= 0.5;
-            this.x += this.vx; this.y += this.vy; this.angle += this.vAngle; 
+            this.x += this.vx; this.y += this.vy; this.angle += this.vAngle;
             return;
         }
 
+        // Determine zone modifiers
         let onBump = false, inTower = false, inDepot = false;
-        zones.forEach(z => { 
-            if (z.type === 'bump' && rectRect(this.x, this.y, this.model.w, this.model.h, z)) onBump = true; 
-            if (z.type === 'tower' && rectRect(this.x, this.y, this.model.w, this.model.h, z)) inTower = true;
-            if (z.type === 'depot' && rectRect(this.x, this.y, this.model.w, this.model.h, z)) inDepot = true;
+        const myOBB = getOBB(this);
+        zones.forEach(z => {
+            if (z.type === 'bump' && collideOBB_AABB(myOBB, z).colliding) onBump = true;
+            if (z.type === 'tower' && collideOBB_AABB(myOBB, z).colliding) inTower = true;
+            if (z.type === 'depot' && collideOBB_AABB(myOBB, z).colliding) inDepot = true;
         });
 
         const rcx = this.x + this.model.w/2, rcy = this.y + this.model.h/2;
         const isShootingZone = alliance === 'red' ? rcx < RED_SHOOT_LIMIT : rcx > BLUE_SHOOT_LIMIT;
-        
+
         let heldSpan = document.getElementById(alliance === 'red' ? 'heldRed' : 'heldBlue');
-        if (this.inventory >= this.model.capacity * 0.75) heldSpan.classList.add('warning'); else heldSpan.classList.remove('warning');
+        if (this.inventory >= this.model.capacity * 0.75) heldSpan.classList.add('warning');
+        else heldSpan.classList.remove('warning');
 
-        if (moveX !== 0 || moveY !== 0) { const mag = Math.sqrt(moveX*moveX + moveY*moveY); if (mag > 0.8) { moveX /= mag; moveY /= mag; } }
+        if (moveX !== 0 || moveY !== 0) {
+            const mag = Math.sqrt(moveX*moveX + moveY*moveY);
+            if (mag > 0.8) { moveX /= mag; moveY /= mag; }
+        }
 
-        // Depot applies a 65% modifier to speed/acceleration
         let speedMod = inDepot ? 0.65 : 1.0;
-
-        // Blitz maintains 60% speed while active, Dumper 25%, others 50%
-        let passSpeedDampen = this.name === 'Blitz' ? 0.60 : (this.name === 'dumper' ? 0.25 : (this.name === '3636' ? 0.8 : (this.name === '3636 main season' ? 1.0 : 0.50)));
+        let passSpeedDampen = this.name === 'Blitz' ? 0.60 : (this.name === 'dumper' ? 0.25 : (this.name === '2910' ? 0.25 : (this.name === '3636' ? 0.8 : (this.name === '3636 main season' ? 1.0 : 0.50))));
         this.vx += moveX * (onBump ? 0.15 : (this.model.accel * speedMod * (isActionActive ? passSpeedDampen : 1.0)));
         this.vy += moveY * (onBump ? 0.15 : (this.model.accel * speedMod * (isActionActive ? passSpeedDampen : 1.0)));
 
         let isLockedOn = true;
-        
-        if (this.name === 'dumper' && isActionActive && !inTower) {
+
+        const collidingWithOther = () => {
+            if (!otherBot) return false;
+            const myOBB = getOBB(this);
+            const otherOBB = getOBB(otherBot);
+            return collideOBB_OBB(myOBB, otherOBB).colliding;
+        };
+
+        const now = Date.now();
+        const isDisrupted = now < this.disruptedUntil;
+        const canAutoAim = !isDisrupted && isLockedOn;
+
+        if ((this.name === 'dumper' || this.name === '2910') && isActionActive && !inTower && !isDisrupted) {
             let tx = isShootingZone ? zones.find(z => z.type === 'hub' && z.side === alliance).x + HUB_S/2 : (alliance === 'red' ? 40 : FIELD_W - 40);
             let ty = isShootingZone ? zones.find(z => z.type === 'hub' && z.side === alliance).y + HUB_S/2 : (rcy < FIELD_H/2 ? 40 : FIELD_H - 40);
             let diff = Math.atan2(ty - rcy, tx - rcx) + Math.PI - this.angle;
             while (diff < -Math.PI) diff += Math.PI * 2; while (diff > Math.PI) diff -= Math.PI * 2;
-            let autoSpeedCap = 0.20 * speedMod * (isShootingZone ? 0.45 : 0.6); 
-            this.vAngle = Math.max(-autoSpeedCap, Math.min(autoSpeedCap, diff * 0.45)); 
-            if (Math.abs(diff) > 0.04) isLockedOn = false; 
-        } else if (this.name === 'Blitz' && isActionActive && !inTower) {
+            let autoSpeedCap = 0.20 * speedMod * (isShootingZone ? 0.45 : 0.6);
+            if (collidingWithOther()) autoSpeedCap *= 0.2;
+            this.vAngle = Math.max(-autoSpeedCap, Math.min(autoSpeedCap, diff * 0.45));
+            if (Math.abs(diff) > 0.04) isLockedOn = false;
+        } else if (this.name === 'Blitz' && isActionActive && !inTower && !isDisrupted) {
             let diff = 0;
             if (isShootingZone) {
-                // Shoot straight at the hub
                 let tx = zones.find(z => z.type === 'hub' && z.side === alliance).x + HUB_S/2;
                 let ty = zones.find(z => z.type === 'hub' && z.side === alliance).y + HUB_S/2;
                 diff = Math.atan2(ty - rcy, tx - rcx) - this.angle;
             } else {
-                // Pass across field avoiding hitting the central Y-line by 40 pixels (avoids opponent hub)
                 let targetX = alliance === 'red' ? 0 : FIELD_W;
                 let targetY = rcy;
                 let hubYCenter = FIELD_H/2;
-                let hubClearance = (HUB_S/2) + 40; 
-                
+                let hubClearance = (HUB_S/2) + 40;
                 if (Math.abs(rcy - hubYCenter) < hubClearance) {
                     if (rcy < hubYCenter) targetY = hubYCenter - hubClearance;
                     else targetY = hubYCenter + hubClearance;
                 }
-                
                 let targetAngle = Math.atan2(targetY - rcy, targetX - rcx);
                 diff = targetAngle - this.angle;
             }
-            
             while (diff < -Math.PI) diff += Math.PI * 2; while (diff > Math.PI) diff -= Math.PI * 2;
-            let autoSpeedCap = 0.20 * speedMod * (isShootingZone ? 0.45 : 0.6); 
-            this.vAngle = Math.max(-autoSpeedCap, Math.min(autoSpeedCap, diff * 0.45)); 
-            
-            // Requires strict alignment before firing. No bypasses for Blitz.
-            if (Math.abs(diff) > 0.06) isLockedOn = false; 
+            let autoSpeedCap = 0.20 * speedMod * (isShootingZone ? 0.45 : 0.6);
+            if (collidingWithOther()) autoSpeedCap *= 0.2;
+            this.vAngle = Math.max(-autoSpeedCap, Math.min(autoSpeedCap, diff * 0.45));
+            if (Math.abs(diff) > 0.06) isLockedOn = false;
         } else {
             this.vAngle += rotInput * (this.model.rotSpeed * speedMod * (isActionActive ? (isShootingZone ? 0.45 : 0.6) : 1.0));
         }
 
         this.vx *= 0.91; this.vy *= 0.91; this.vAngle *= 0.78;
 
-        let nx = this.x + this.vx, ny = this.y + this.vy, blockX = false, blockY = false;
-        obstacles.forEach(o => {
-            if (o.type === 'trench' && this.inventory < 85) return;
-            if (rectRect(nx, this.y, this.model.w, this.model.h, o)) blockX = true;
-            if (rectRect(this.x, ny, this.model.w, this.model.h, o)) blockY = true;
-        });
+        // Tentative new position
+        let newX = this.x + this.vx;
+        let newY = this.y + this.vy;
 
-        if (!blockX && nx > 0 && nx + this.model.w < FIELD_W) this.x = nx;
-        if (!blockY && ny > 0 && ny + this.model.h < FIELD_H) this.y = ny;
+        // Helper to test OBB vs obstacle and resolve
+        const tryMove = (x, y) => {
+            let testBot = { ...this, x, y };
+            let testOBB = getOBB(testBot);
+            let collides = false;
+            for (let o of obstacles) {
+                if (o.type === 'trench' && this.inventory < 85) continue;
+                const collision = collideOBB_AABB(testOBB, o);
+                if (collision.colliding) {
+                    collides = true;
+                    // Push out along MTV
+                    const mtv = { x: collision.axis.x * collision.overlap, y: collision.axis.y * collision.overlap };
+                    x -= mtv.x;
+                    y -= mtv.y;
+                    // Update testOBB after push
+                    testBot.x = x; testBot.y = y;
+                    testOBB = getOBB(testBot);
+                    // Prevent infinite loop (one iteration is enough)
+                    break;
+                }
+            }
+            // Clamp to field bounds
+            x = Math.max(0, Math.min(FIELD_W - this.model.w, x));
+            y = Math.max(0, Math.min(FIELD_H - this.model.h, y));
+            return { x, y };
+        };
+
+        const resultX = tryMove(newX, this.y);
+        const finalX = resultX.x;
+        const resultY = tryMove(this.x, newY);
+        const finalY = resultY.y;
+
+        this.x = finalX;
+        this.y = finalY;
         this.angle += this.vAngle;
 
-        const now = Date.now();
+        // Shooting logic with disruption
         if (isActionActive && this.inventory > 0 && !inTower) {
-            if (this.name === 'dumper' || this.name === 'Blitz') {
+            if ((this.name === 'dumper' || this.name === 'Blitz' || this.name === '2910') && canAutoAim) {
                 if (isLockedOn) {
                     if (now - this.lastShot > 500) for(let i=0; i<4; i++) this.streamCooldowns[i] = now + (i * 45);
                     for (let i = 0; i < 4; i++) {
                         if (now >= this.streamCooldowns[i] && this.inventory > 0) {
                             this.fireSingleStream(i, 4, 5.5, isShootingZone, alliance, rcx, rcy);
-                            this.streamCooldowns[i] = now + 105 + Math.random() * 55; this.lastShot = now;
+                            if (this.name === '2910') {
+                                this.streamCooldowns[i] = now + 55 + Math.random() * 25; this.lastShot = now;
+                            } else {
+                                this.streamCooldowns[i] = now + 105 + Math.random() * 55; this.lastShot = now;
+                            }
                         }
                     }
                 }
-            } else if (this.name === 'double turret') {
+            } else if (this.name === 'double turret' && !isDisrupted) {
                 if (now - this.lastShot > 500) {
                     this.streamCooldowns[0] = now;
                     this.streamCooldowns[1] = now + 60;
@@ -586,7 +629,7 @@ class Robot {
                         this.lastShot = now;
                     }
                 }
-            } else if (now - this.lastShot > this.model.fireRate) {
+            } else if (!isDisrupted && now - this.lastShot > this.model.fireRate) {
                 this.fireStandard(isShootingZone, alliance, rcx, rcy, now);
             }
         }
@@ -668,10 +711,19 @@ class Robot {
             }
         } else {
             ctx.fillStyle = "#fbbf24"; 
-            let bY = this.name === 'dumper' ? -14 : -12.5;
-            let bW = this.name === 'dumper' ? 5 : 6;
-            let bH = this.name === 'dumper' ? 28 : 25;
+            let bY = (this.name === 'dumper' || this.name === '2910') ? -14 : -12.5;
+            let bW = (this.name === 'dumper' || this.name === '2910') ? 5 : 6;
+            let bH = (this.name === 'dumper' || this.name === '2910') ? 28 : 25;
             ctx.fillRect(this.model.w/2 - 2, bY, bW, bH); 
+        }
+
+        if (Date.now() < this.disruptedUntil) {
+            ctx.save();
+            ctx.globalAlpha = 0.7;
+            ctx.fillStyle = "#ff0000";
+            ctx.font = "bold 20px sans-serif";
+            ctx.fillText("!", 0, -this.model.h/2 - 5);
+            ctx.restore();
         }
         
         ctx.rotate(-this.angle); ctx.fillStyle = "#fff"; ctx.font = "bold 14px Segoe UI"; ctx.textAlign = "center"; ctx.fillText(this.inventory, 0, 5); ctx.restore();
@@ -811,6 +863,199 @@ function getInputs(type, gpIdx) {
     return {x, y, rot, act, toggleIn};
 }
 
+function getOBB(robot) {
+    const center = { x: robot.x + robot.model.w/2, y: robot.y + robot.model.h/2 };
+    const halfW = robot.model.w/2;
+    const halfH = robot.model.h/2;
+    const angle = robot.angle;
+    // corners relative to center
+    const cos = Math.cos(angle);
+    const sin = Math.sin(angle);
+    const axes = [
+        { x: cos, y: sin },                     // local X axis
+        { x: -sin, y: cos }                     // local Y axis
+    ];
+    return { center, halfW, halfH, angle, axes, w: robot.model.w, h: robot.model.h };
+}
+
+function projectOBB(obb, axis) {
+    const cx = obb.center.x, cy = obb.center.y;
+    const hw = obb.halfW, hh = obb.halfH;
+    const cos = Math.cos(obb.angle);
+    const sin = Math.sin(obb.angle);
+    // half-extents projected
+    const rx = hw * Math.abs(axis.x * cos + axis.y * sin);
+    const ry = hh * Math.abs(axis.x * -sin + axis.y * cos);
+    const centerProj = cx * axis.x + cy * axis.y;
+    return { min: centerProj - (rx + ry), max: centerProj + (rx + ry) };
+}
+
+function projectAABB(rect, axis) {
+    const centerX = rect.x + rect.w/2;
+    const centerY = rect.y + rect.h/2;
+    const halfW = rect.w/2;
+    const halfH = rect.h/2;
+    const proj = centerX * axis.x + centerY * axis.y;
+    const extent = halfW * Math.abs(axis.x) + halfH * Math.abs(axis.y);
+    return { min: proj - extent, max: proj + extent };
+}
+
+function collideOBB_OBB(obb1, obb2) {
+    const axes = [...obb1.axes, ...obb2.axes];
+    let overlap = Infinity;
+    let mtvAxis = null;
+    for (let axis of axes) {
+        const p1 = projectOBB(obb1, axis);
+        const p2 = projectOBB(obb2, axis);
+        const d = Math.min(p1.max, p2.max) - Math.max(p1.min, p2.min);
+        if (d <= 0) return { colliding: false };
+        if (d < overlap) {
+            overlap = d;
+            mtvAxis = axis;
+        }
+    }
+    // Ensure MTV points from obb1 to obb2
+    const dir = (obb2.center.x - obb1.center.x) * mtvAxis.x + (obb2.center.y - obb1.center.y) * mtvAxis.y;
+    if (dir < 0) {
+        mtvAxis = { x: -mtvAxis.x, y: -mtvAxis.y };
+    }
+    return { colliding: true, overlap, axis: mtvAxis };
+}
+
+function collideOBB_AABB(obb, rect) {
+    const axes = [...obb.axes, { x: 1, y: 0 }, { x: 0, y: 1 }];
+    let overlap = Infinity;
+    let mtvAxis = null;
+    for (let axis of axes) {
+        const p1 = projectOBB(obb, axis);
+        const p2 = projectAABB(rect, axis);
+        const d = Math.min(p1.max, p2.max) - Math.max(p1.min, p2.min);
+        if (d <= 0) return { colliding: false };
+        if (d < overlap) {
+            overlap = d;
+            mtvAxis = axis;
+        }
+    }
+    const dir = (rect.x + rect.w/2 - obb.center.x) * mtvAxis.x + (rect.y + rect.h/2 - obb.center.y) * mtvAxis.y;
+    if (dir < 0) {
+        mtvAxis = { x: -mtvAxis.x, y: -mtvAxis.y };
+    }
+    return { colliding: true, overlap, axis: mtvAxis };
+}
+
+function resolveCollision(obj1, obj2, collision, elasticity = 0.4) {
+    if (!collision.colliding) return false;
+    const mtv = { x: collision.axis.x * collision.overlap, y: collision.axis.y * collision.overlap };
+    // Position correction (split)
+    obj1.x -= mtv.x * 0.5;
+    obj1.y -= mtv.y * 0.5;
+    obj2.x += mtv.x * 0.5;
+    obj2.y += mtv.y * 0.5;
+    // Velocity response along collision normal
+    const n = collision.axis;
+    const relVelX = obj2.vx - obj1.vx;
+    const relVelY = obj2.vy - obj1.vy;
+    const velAlong = relVelX * n.x + relVelY * n.y;
+    if (velAlong < 0) {
+        const e = elasticity;
+        const imp = (1 + e) * velAlong;
+        const m1 = 1, m2 = 1; // equal mass
+        const invMassSum = 1/m1 + 1/m2;
+        const impulse = imp / invMassSum;
+        obj1.vx += (impulse / m1) * n.x;
+        obj1.vy += (impulse / m1) * n.y;
+        obj2.vx -= (impulse / m2) * n.x;
+        obj2.vy -= (impulse / m2) * n.y;
+    }
+    return true;
+}
+
+function getContactPoint(obb1, obb2, axis) {
+    // Get supporting points in direction of axis and opposite direction
+    const support1 = (obb, dir) => {
+        const halfW = obb.halfW, halfH = obb.halfH;
+        const cos = Math.cos(obb.angle), sin = Math.sin(obb.angle);
+        // local coordinates of extreme point in direction dir
+        let localX = 0, localY = 0;
+        if (dir.x * cos + dir.y * sin > 0) localX = halfW;
+        else localX = -halfW;
+        if (dir.x * -sin + dir.y * cos > 0) localY = halfH;
+        else localY = -halfH;
+        // rotate local to world
+        const worldX = obb.center.x + localX * cos - localY * sin;
+        const worldY = obb.center.y + localX * sin + localY * cos;
+        return { x: worldX, y: worldY };
+    };
+    const p1 = support1(obb1, axis);
+    const p2 = support1(obb2, { x: -axis.x, y: -axis.y });
+    // average as contact point
+    return { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 };
+}
+
+function resolveCollisionRobots(r1, r2, collision) {
+    if (!collision.colliding) return false;
+    const mtv = { x: collision.axis.x * collision.overlap, y: collision.axis.y * collision.overlap };
+    // Position correction
+    r1.x -= mtv.x * 0.5;
+    r1.y -= mtv.y * 0.5;
+    r2.x += mtv.x * 0.5;
+    r2.y += mtv.y * 0.5;
+
+    const obb1 = getOBB(r1);
+    const obb2 = getOBB(r2);
+    const contact = getContactPoint(obb1, obb2, collision.axis);
+
+    const r1_cx = contact.x - (r1.x + r1.model.w/2);
+    const r1_cy = contact.y - (r1.y + r1.model.h/2);
+    const r2_cx = contact.x - (r2.x + r2.model.w/2);
+    const r2_cy = contact.y - (r2.y + r2.model.h/2);
+
+    const v1_contact = {
+        x: r1.vx - r1.vAngle * r1_cy,
+        y: r1.vy + r1.vAngle * r1_cx
+    };
+    const v2_contact = {
+        x: r2.vx - r2.vAngle * r2_cy,
+        y: r2.vy + r2.vAngle * r2_cx
+    };
+    const relVel = { x: v2_contact.x - v1_contact.x, y: v2_contact.y - v1_contact.y };
+    const velAlong = relVel.x * collision.axis.x + relVel.y * collision.axis.y;
+    if (velAlong > 0) return false;
+
+    const e = 0.4;
+    const m1 = 1, m2 = 1;
+    const I1 = (1/12) * m1 * (r1.model.w * r1.model.w + r1.model.h * r1.model.h);
+    const I2 = (1/12) * m2 * (r2.model.w * r2.model.w + r2.model.h * r2.model.h);
+
+    const cross1 = (r1_cx * collision.axis.y - r1_cy * collision.axis.x);
+    const cross2 = (r2_cx * collision.axis.y - r2_cy * collision.axis.x);
+    const invMassSum = 1/m1 + 1/m2 + (cross1 * cross1)/I1 + (cross2 * cross2)/I2;
+    const impulseMag = -(1 + e) * velAlong / invMassSum;
+    const impulse = { x: impulseMag * collision.axis.x, y: impulseMag * collision.axis.y };
+
+    // Apply linear and angular impulse
+    r1.vx -= impulse.x / m1;
+    r1.vy -= impulse.y / m1;
+    r2.vx += impulse.x / m2;
+    r2.vy += impulse.y / m2;
+    r1.vAngle -= (r1_cx * impulse.y - r1_cy * impulse.x) / I1;
+    r2.vAngle += (r2_cx * impulse.y - r2_cy * impulse.x) / I2;
+
+    // --- Disruption logic: if either robot is auto-aim type and bump magnitude is significant ---
+    const autoAimTypes = ['Blitz', 'dumper', '2910'];
+    const now = Date.now();
+    const bumpStrength = Math.abs(impulseMag); // roughly velocity change magnitude
+
+    if (autoAimTypes.includes(r1.name) && bumpStrength > 1.2) {
+        r1.disruptedUntil = now + 400; // 0.4 sec disruption
+    }
+    if (autoAimTypes.includes(r2.name) && bumpStrength > 1.2) {
+        r2.disruptedUntil = now + 400;
+    }
+
+    return true;
+}
+
 function update() {
     tickMatch(); updateHudBar(); const now = Date.now();
     let p1State = getInputs(p1Input, 0); let p2State = getInputs(p2Input, p1Input === 'keyboard2' ? 1 : 0);
@@ -819,30 +1064,27 @@ function update() {
     if (now < p1FreezeUntil) { p1State = {x: 0, y: 0, rot: 0, act: false, toggleIn: false}; }
     if (now < p2FreezeUntil) { p2State = {x: 0, y: 0, rot: 0, act: false, toggleIn: false}; }
 
-    botRed.update(p1State.x, p1State.y, p1State.rot, p1State.act, p1State.toggleIn, 'red', obstacles, zones);
-    if (p2Enabled) botBlue.update(p2State.x, p2State.y, p2State.rot, p2State.act, p2State.toggleIn, sameTeamMode ? 'red' : 'blue', obstacles, zones);
+    botRed.update(p1State.x, p1State.y, p1State.rot, p1State.act, p1State.toggleIn, 'red', obstacles, zones, botBlue);
+    if (p2Enabled) botBlue.update(p2State.x, p2State.y, p2State.rot, p2State.act, p2State.toggleIn, sameTeamMode ? 'red' : 'blue', obstacles, zones, botRed);
 
     if (p2Enabled) {
-        let dx = (botRed.x+botRed.model.w/2) - (botBlue.x+botBlue.model.w/2), dy = (botRed.y+botRed.model.h/2) - (botBlue.y+botBlue.model.h/2), rad = botRed.model.w/2 + botBlue.model.w/2; 
-        if (dx*dx + dy*dy < rad*rad) {
-            let dist = Math.sqrt(dx*dx + dy*dy); if (dist===0) {dx=1; dist=1;}
-            let nx = dx/dist, ny = dy/dist, overlap = rad - dist;
-            botRed.x += nx*overlap*0.5; botRed.y += ny*overlap*0.5; botBlue.x -= nx*overlap*0.5; botBlue.y -= ny*overlap*0.5;
-            botRed.x = Math.max(0, Math.min(FIELD_W-botRed.model.w, botRed.x)); botRed.y = Math.max(0, Math.min(FIELD_H-botRed.model.h, botRed.y));
-            botBlue.x = Math.max(0, Math.min(FIELD_W-botBlue.model.w, botBlue.x)); botBlue.y = Math.max(0, Math.min(FIELD_H-botBlue.model.h, botBlue.y));
-            obstacles.forEach(o => {
-                if (o.type === 'trench') return;
-                if (rectRect(botRed.x, botRed.y, botRed.model.w, botRed.model.h, o)) { botRed.x = nx>0 ? o.x+o.w : o.x-botRed.model.w; botRed.vx = 0; }
-                if (rectRect(botBlue.x, botBlue.y, botBlue.model.w, botBlue.model.h, o)) { botBlue.x = nx>0 ? o.x-botBlue.model.w : o.x+o.w; botBlue.vx = 0; }
-            });
-            botRed.vx += nx*0.5; botRed.vy += ny*0.5; botBlue.vx -= nx*0.5; botBlue.vy -= ny*0.5;
+        const obbRed = getOBB(botRed);
+        const obbBlue = getOBB(botBlue);
+        const collision = collideOBB_OBB(obbRed, obbBlue);
+        if (collision.colliding) {
+            resolveCollisionRobots(botRed, botBlue, collision);
+            // Clamp to field bounds
+            botRed.x = Math.max(0, Math.min(FIELD_W - botRed.model.w, botRed.x));
+            botRed.y = Math.max(0, Math.min(FIELD_H - botRed.model.h, botRed.y));
+            botBlue.x = Math.max(0, Math.min(FIELD_W - botBlue.model.w, botBlue.x));
+            botBlue.y = Math.max(0, Math.min(FIELD_H - botBlue.model.h, botBlue.y));
         }
     }
 
     scoringBalls = scoringBalls.filter(sb => {
         if (now >= sb.exitTime) {
             // Velocity dynamically lowered to spit balls out shorter distances
-            let dir = sb.side === 'red' ? 1 : -1, eS = 3.0 + Math.random()*1.0, eA = (Math.random()-0.5)*0.8; 
+            let dir = sb.side === 'red' ? 1 : -1, eS = 3.0 + Math.random()*1.0, eA = (Math.random()-0.5)*0.8;
             balls.push({ x: sb.side==='red' ? sb.hubX+HUB_S+BALL_R+2 : sb.hubX-BALL_R-2, y: sb.hubY+HUB_S/2, r: BALL_R, vx: Math.cos(eA)*(dir*eS), vy: Math.sin(eA)*eS, isStatic: false, frictionMod: 0.985, rollTimer: now + 1500, wasOnBump: false, owner: sb.side }); return false;
         } return true;
     });
@@ -853,28 +1095,28 @@ function update() {
         let onB = false; zones.forEach(z => { if (z.type==='bump' && b.x>z.x && b.x<z.x+z.w && b.y>z.y && b.y<z.y+z.h) { onB = true; b.isStatic = false; b.vx += (b.x<z.x+z.w/2)?-0.12:0.12; } });
         if (!onB && b.wasOnBump) { b.vx *= 0.15; b.vy *= 0.15; } b.wasOnBump = onB;
         if (!b.isStatic) { b.x += b.vx; b.y += b.vy; let f = (b.rollTimer && now < b.rollTimer) ? b.frictionMod : (onB?0.96:0.91); b.vx *= f; b.vy *= f; if (Math.hypot(b.vx, b.vy) < 0.15) { b.vx=0; b.vy=0; b.isStatic=true; } }
-        
+
         if (b.x < b.r) { b.x = b.r; b.vx *= -0.2; b.isStatic = false; } if (b.x > FIELD_W - b.r) { b.x = FIELD_W - b.r; b.vx *= -0.2; b.isStatic = false; }
         if (b.y < b.r) { b.y = b.r; b.vy *= -0.2; b.isStatic = false; } if (b.y > FIELD_H - b.r) { b.y = FIELD_H - b.r; b.vy *= -0.2; b.isStatic = false; }
-        
-        obstacles.forEach(o => { 
-            if (o.type !== 'trench') { 
-                let col = circleRectCollision(b, o); 
-                if (col.hit) { 
-                    b.isStatic = false; 
-                    b.vx *= 0.8; 
-                    b.vy *= 0.8; 
-                    b.x += col.nx * col.overlap; 
-                    b.y += col.ny * col.overlap; 
-                } 
-            } 
+
+        obstacles.forEach(o => {
+            if (o.type !== 'trench') {
+                let col = circleRectCollision(b, o);
+                if (col.hit) {
+                    b.isStatic = false;
+                    b.vx *= 0.8;
+                    b.vy *= 0.8;
+                    b.x += col.nx * col.overlap;
+                    b.y += col.ny * col.overlap;
+                }
+            }
         });
 
         let activeBots = p2Enabled ? [botRed, botBlue] : [botRed];
         for(let bot of activeBots) {
             let alliance = bot === botRed ? 'red' : (sameTeamMode ? 'red' : 'blue');
             let ix, iy;
-            
+
             if (bot.name === 'Blitz') {
                 let intakeAngleOffset = bot.intakeSide === 'right' ? Math.PI/2 : -Math.PI/2;
                 ix = (bot.x+bot.model.w/2) + Math.cos(bot.angle + intakeAngleOffset)*(bot.model.w/2+5);
@@ -885,22 +1127,22 @@ function update() {
             }
 
             if (Math.hypot(b.x-ix, b.y-iy)<9 && bot.inventory<bot.model.capacity) { bot.inventory++; document.getElementById(alliance==='red'?'heldRed':'heldBlue').innerText = bot.inventory; return false; }
-            
+
             let rCol = circleRectCollision(b, {x: bot.x, y: bot.y, w: bot.model.w, h: bot.model.h});
-            if (rCol.hit) { 
-                b.isStatic = false; 
-                b.owner = alliance; 
-                b.x += rCol.nx * rCol.overlap; 
-                b.y += rCol.ny * rCol.overlap; 
-                b.vx += rCol.nx * (Math.abs(bot.vx) * 0.5 + 1.0); 
-                b.vy += rCol.ny * (Math.abs(bot.vy) * 0.5 + 1.0); 
+            if (rCol.hit) {
+                b.isStatic = false;
+                b.owner = alliance;
+                b.x += rCol.nx * rCol.overlap;
+                b.y += rCol.ny * rCol.overlap;
+                b.vx += rCol.nx * (Math.abs(bot.vx) * 0.5 + 1.0);
+                b.vy += rCol.ny * (Math.abs(bot.vy) * 0.5 + 1.0);
             }
-        } 
-        
+        }
+
         let speed = Math.hypot(b.vx, b.vy);
-        if (speed > 25) { 
-            b.vx = (b.vx / speed) * 25; 
-            b.vy = (b.vy / speed) * 25; 
+        if (speed > 25) {
+            b.vx = (b.vx / speed) * 25;
+            b.vy = (b.vy / speed) * 25;
         }
         return true;
     });
@@ -910,16 +1152,16 @@ function update() {
         if (p.x<p.r || p.x>FIELD_W-p.r) p.vx*=-0.4; if (p.y<p.r || p.y>FIELD_H-p.r) p.vy*=-0.4;
         obstacles.forEach(o => { if (o.type==='hub' && !p.isPass && o.side!==p.owner) { let col = circleRectCollision(p, o); if(col.hit){p.vx*=-0.2;p.vy*=-0.2;} } });
         let scored = false;
-        zones.forEach(z => { 
+        zones.forEach(z => {
             // Intake radius aligned perfectly with the circumradius of the visual hexagon (HUB_S/2)
-            if (z.type === 'hub' && z.side === p.owner && !p.isPass && Math.hypot(p.x-(z.x+z.w/2), p.y-(z.y+z.h/2)) < HUB_S/2) { 
-                scoringBalls.push({ exitTime: now + 300, hubX: z.x, hubY: z.y, side: z.side }); scored = true; 
+            if (z.type === 'hub' && z.side === p.owner && !p.isPass && Math.hypot(p.x-(z.x+z.w/2), p.y-(z.y+z.h/2)) < HUB_S/2) {
+                scoringBalls.push({ exitTime: now + 300, hubX: z.x, hubY: z.y, side: z.side }); scored = true;
                 let isHubActive = p.owner === 'red' ? hubRedActive : hubBlueActive;
                 if (matchRunning && isHubActive) {
                     if(p.owner === 'red') { scoreRed++; document.getElementById('scoreRedDisplay').innerText = scoreRed; if (!autoPhaseEnded) autoScoreRed++; }
                     else { scoreBlue++; document.getElementById('scoreBlueDisplay').innerText = scoreBlue; if (!autoPhaseEnded) autoScoreBlue++; }
                 }
-            } 
+            }
         });
         if (p.isPass && Math.hypot(p.vx, p.vy) < 0.95) { balls.push({ x: p.x, y: p.y, r: BALL_R, vx: p.vx*0.35, vy: p.vy*0.35, isStatic: false, wasOnBump: false, owner: p.owner }); return false; }
         return !scored;
