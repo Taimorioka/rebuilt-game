@@ -711,7 +711,7 @@ class Robot {
 
     fireSingleStream(streamIdx, totalStreams, customSpacing, isShooting, alliance, rcx, rcy) {
         let launchAngle = this.angle;
-        let speed = 11.5;
+        let speed = 7;
 
         if (isShooting) {
             let z = zones.find(z => z.type === 'hub' && z.side === alliance);
@@ -1190,13 +1190,33 @@ function update() {
 
     scoringBalls = scoringBalls.filter(sb => {
         if (now >= sb.exitTime) {
-            // Velocity dynamically lowered to spit balls out shorter distances
-            let dir = sb.side === 'red' ? 1 : -1, eS = 3.0 + Math.random()*1.0, eA = (Math.random()-0.5)*0.8;
-            balls.push({ x: sb.side==='red' ? sb.hubX+HUB_S+BALL_R+2 : sb.hubX-BALL_R-2, y: sb.hubY+HUB_S/2, r: BALL_R, vx: Math.cos(eA)*(dir*eS), vy: Math.sin(eA)*eS, isStatic: false, frictionMod: 0.985, rollTimer: now + 1500, wasOnBump: false, owner: sb.side }); return false;
-        } return true;
+            let dir = sb.side === 'red' ? 1 : -1, eS = 4 + Math.random()*0.9, eA = (Math.random()-0.5)*0.8;
+            balls.push({
+                x: sb.side==='red' ? sb.hubX+HUB_S+BALL_R+2 : sb.hubX-BALL_R-2,
+                y: sb.hubY+HUB_S/2,
+                r: BALL_R,
+                vx: Math.cos(eA)*(dir*eS),
+                vy: Math.sin(eA)*eS,
+                isStatic: false,
+                frictionMod: 0.985,
+                rollTimer: now + 1500,
+                wasOnBump: false,
+                owner: sb.side,
+                noCollideUntil: now + 300    // <-- new: ignore collisions for 200ms
+            });
+            return false;
+        }
+        return true;
     });
 
-    for (let i = 0; i < balls.length; i++) for (let j = i + 1; j < balls.length; j++) resolveBallCollision(balls[i], balls[j]);
+    for (let i = 0; i < balls.length; i++) {
+        for (let j = i + 1; j < balls.length; j++) {
+            // Skip collision for newly ejected balls
+            if (balls[i].noCollideUntil && now < balls[i].noCollideUntil) continue;
+            if (balls[j].noCollideUntil && now < balls[j].noCollideUntil) continue;
+            resolveBallCollision(balls[i], balls[j]);
+        }
+    }
 
     balls = balls.filter(b => {
         let onB = false; zones.forEach(z => { if (z.type==='bump' && b.x>z.x && b.x<z.x+z.w && b.y>z.y && b.y<z.y+z.h) { onB = true; b.isStatic = false; b.vx += (b.x<z.x+z.w/2)?-0.12:0.12; } });
