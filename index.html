@@ -293,6 +293,7 @@ const BOT_MODELS = {
     '2910':  { accel: 0.38, rotSpeed: 0.05, capacity: 62, fireRate: -0, w: 35, h: 35 },
     '3636': { accel: 0.38, rotSpeed: 0.036, capacity: 50, fireRate: 180, w: 35, h: 35 },
     '3636 main season': { accel: 0.36, rotSpeed: 0.036, capacity: 20, fireRate: 500, w: 35, h: 35 },
+    'baguette': { accel: 0.35, rotSpeed: 0.04, capacity: 0, fireRate: 0, w: 20, h: 70 },
 };
 
 const S = 1.6; 
@@ -643,26 +644,38 @@ class Robot {
         const tryMove = (x, y) => {
             let testBot = { ...this, x, y };
             let testOBB = getOBB(testBot);
-            let collides = false;
+
             for (let o of obstacles) {
                 if (o.type === 'trench' && this.inventory < 85) continue;
+
                 const collision = collideOBB_AABB(testOBB, o);
+
                 if (collision.colliding) {
-                    collides = true;
                     // Push out along MTV
-                    const mtv = { x: collision.axis.x * collision.overlap, y: collision.axis.y * collision.overlap };
+                    const mtv = {
+                        x: collision.axis.x * collision.overlap,
+                        y: collision.axis.y * collision.overlap
+                    };
+
                     x -= mtv.x;
                     y -= mtv.y;
-                    // Update testOBB after push
-                    testBot.x = x; testBot.y = y;
+
+                    testBot.x = x;
+                    testBot.y = y;
                     testOBB = getOBB(testBot);
-                    // Prevent infinite loop (one iteration is enough)
+
                     break;
                 }
             }
-            // Clamp to field bounds
-            x = Math.max(0, Math.min(FIELD_W - this.model.w, x));
-            y = Math.max(0, Math.min(FIELD_H - this.model.h, y));
+
+            // Properly clamp TEST position to field bounds
+            const aabb = getOBB_AABB(testBot);
+
+            if (aabb.minX < 0) x += (0 - aabb.minX);
+            if (aabb.maxX > FIELD_W) x -= (aabb.maxX - FIELD_W);
+            if (aabb.minY < 0) y += (0 - aabb.minY);
+            if (aabb.maxY > FIELD_H) y -= (aabb.maxY - FIELD_H);
+
             return { x, y };
         };
 
@@ -1006,6 +1019,74 @@ function projectAABB(rect, axis) {
     return { min: proj - extent, max: proj + extent };
 }
 
+function getOBB_AABB(robot) {
+    const obb = getOBB(robot);
+    const cos = Math.cos(obb.angle);
+    const sin = Math.sin(obb.angle);
+    // half-extents in world axes
+    const hw = obb.halfW;
+    const hh = obb.halfH;
+    const extX = Math.abs(hw * cos) + Math.abs(hh * sin);
+    const extY = Math.abs(hw * sin) + Math.abs(hh * cos);
+    return {
+        minX: obb.center.x - extX,
+        maxX: obb.center.x + extX,
+        minY: obb.center.y - extY,
+        maxY: obb.center.y + extY,
+    };
+}
+
+function circleOBBCollision(c, obb) {
+    // Transform circle center into OBB local space
+    const dx = c.x - obb.center.x;
+    const dy = c.y - obb.center.y;
+    const cos = Math.cos(-obb.angle);
+    const sin = Math.sin(-obb.angle);
+    const localX = dx * cos - dy * sin;
+    const localY = dx * sin + dy * cos;
+
+    const halfW = obb.halfW;
+    const halfH = obb.halfH;
+    // Closest point on OBB in local space
+    const closestX = Math.max(-halfW, Math.min(halfW, localX));
+    const closestY = Math.max(-halfH, Math.min(halfH, localY));
+    // Distance from circle center to closest point
+    const distX = localX - closestX;
+    const distY = localY - closestY;
+    const distSq = distX * distX + distY * distY;
+    if (distSq < c.r * c.r) {
+        let overlap, nx, ny;
+        let dist = Math.sqrt(distSq);
+        if (dist === 0) {
+            // Circle center is inside OBB – push out along the nearest edge
+            const diffX = halfW - Math.abs(localX);
+            const diffY = halfH - Math.abs(localY);
+            if (diffX < diffY) {
+                nx = (localX > 0 ? 1 : -1);
+                ny = 0;
+                overlap = c.r + diffX;
+            } else {
+                nx = 0;
+                ny = (localY > 0 ? 1 : -1);
+                overlap = c.r + diffY;
+            }
+            // Transform normal to world space
+            const worldNx = nx * cos + ny * sin;
+            const worldNy = -nx * sin + ny * cos;
+            return { hit: true, nx: worldNx, ny: worldNy, overlap };
+        } else {
+            // Outside – normal points from closest point to circle center
+            const normX = distX / dist;
+            const normY = distY / dist;
+            nx = normX * cos + normY * sin;
+            ny = -normX * sin + normY * cos;
+            overlap = c.r - dist;
+            return { hit: true, nx, ny, overlap };
+        }
+    }
+    return { hit: false };
+}
+
 function collideOBB_OBB(obb1, obb2) {
     const axes = [...obb1.axes, ...obb2.axes];
     let overlap = Infinity;
@@ -1273,7 +1354,8 @@ function update() {
 
             if (Math.hypot(b.x-ix, b.y-iy)<9 && bot.inventory<bot.model.capacity) { bot.inventory++; document.getElementById(alliance==='red'?'heldRed':'heldBlue').innerText = bot.inventory; return false; }
 
-            let rCol = circleRectCollision(b, {x: bot.x, y: bot.y, w: bot.model.w, h: bot.model.h});
+            const obb = getOBB(bot);
+            let rCol = circleOBBCollision(b, obb);
             if (rCol.hit) {
                 b.isStatic = false;
                 b.owner = alliance;
