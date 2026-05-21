@@ -74,30 +74,6 @@
             margin-top: 2px; transition: color 0.2s, text-shadow 0.2s;
         }
 
-        /* ── SHIFT PANEL ── */
-        #shift-panel {
-            position: absolute; bottom: 16px; left: 50%; transform: translateX(-50%);
-            display: flex; gap: 6px; align-items: center;
-            background: rgba(10,10,12,0.95); padding: 7px 16px;
-            border-radius: 8px; border: 1px solid #333; z-index: 10;
-        }
-        .hub-indicator {
-            display: flex; flex-direction: column; align-items: center; gap: 2px;
-            padding: 4px 10px; border-radius: 6px; border: 1px solid #333;
-            font-size: 0.65rem; font-weight: 900; text-transform: uppercase;
-            transition: all 0.3s;
-        }
-        .hub-indicator .hub-name { font-size: 0.55rem; color: #555; letter-spacing: 1px; }
-        .hub-indicator.hub-active-red   { background: rgba(239,68,68,0.2); border-color: #ef4444; color: #ef4444; }
-        .hub-indicator.hub-active-blue  { background: rgba(59,130,246,0.2); border-color: #3b82f6; color: #3b82f6; }
-        .hub-indicator.hub-inactive     { background: rgba(30,30,30,0.6); border-color: #333; color: #444; }
-        .hub-status-dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
-        .shift-divider { color: #444; font-size: 0.8rem; padding: 0 4px; }
-        #shift-label {
-            font-size: 0.7rem; font-weight: 900; color: #666; letter-spacing: 2px;
-            text-transform: uppercase; margin-right: 4px;
-        }
-
         /* ── RIGHT CONTROLS ── */
         .controls-wrapper { 
             position: absolute; top: 12px; right: 20px; z-index: 20; 
@@ -221,21 +197,6 @@
 </div>
 
 <div id="auto-winner">AUTO WON BY RED</div>
-
-<div id="shift-panel">
-    <span id="shift-label">HUB STATUS</span>
-    <div class="hub-indicator hub-inactive" id="hub-red">
-        <div class="hub-name">RED HUB</div>
-        <div class="hub-status-dot"></div>
-        <div id="hub-red-txt">INACTIVE</div>
-    </div>
-    <div class="shift-divider">|</div>
-    <div class="hub-indicator hub-inactive" id="hub-blue">
-        <div class="hub-name">BLUE HUB</div>
-        <div class="hub-status-dot"></div>
-        <div id="hub-blue-txt">INACTIVE</div>
-    </div>
-</div>
 
 <div class="controls-wrapper">
     <button id="toggle-controls-btn">☰ HIDE CONTROLS</button>
@@ -428,10 +389,6 @@ function triggerShiftFlash() {
 }
 
 function updateHubUI(redActive, blueActive) {
-    document.getElementById('hub-red').className = 'hub-indicator ' + (redActive ? 'hub-active-red' : 'hub-inactive');
-    document.getElementById('hub-blue').className = 'hub-indicator ' + (blueActive ? 'hub-active-blue' : 'hub-inactive');
-    document.getElementById('hub-red-txt').innerText = redActive ? 'ACTIVE' : 'INACTIVE';
-    document.getElementById('hub-blue-txt').innerText = blueActive ? 'ACTIVE' : 'INACTIVE';
     hubRedActive = redActive; hubBlueActive = blueActive;
 }
 
