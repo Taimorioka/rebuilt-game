@@ -1223,8 +1223,26 @@ function update() {
         if (!onB && b.wasOnBump) { b.vx *= 0.15; b.vy *= 0.15; } b.wasOnBump = onB;
         if (!b.isStatic) { b.x += b.vx; b.y += b.vy; let f = (b.rollTimer && now < b.rollTimer) ? b.frictionMod : (onB?0.96:0.91); b.vx *= f; b.vy *= f; if (Math.hypot(b.vx, b.vy) < 0.15) { b.vx=0; b.vy=0; b.isStatic=true; } }
 
-        if (b.x < b.r) { b.x = b.r; b.vx *= -0.2; b.isStatic = false; } if (b.x > FIELD_W - b.r) { b.x = FIELD_W - b.r; b.vx *= -0.2; b.isStatic = false; }
-        if (b.y < b.r) { b.y = b.r; b.vy *= -0.2; b.isStatic = false; } if (b.y > FIELD_H - b.r) { b.y = FIELD_H - b.r; b.vy *= -0.2; b.isStatic = false; }
+        if (b.x < b.r) {
+            b.x = b.r + 0.1; // slight push out
+            b.vx = Math.max(Math.abs(b.vx) * 0.5, 1.0); // minimum bounce away
+            b.isStatic = false;
+        }
+        if (b.x > FIELD_W - b.r) {
+            b.x = FIELD_W - b.r - 0.1;
+            b.vx = -Math.max(Math.abs(b.vx) * 0.5, 1.0);
+            b.isStatic = false;
+        }
+        if (b.y < b.r) {
+            b.y = b.r + 0.1;
+            b.vy = Math.max(Math.abs(b.vy) * 0.5, 1.0);
+            b.isStatic = false;
+        }
+        if (b.y > FIELD_H - b.r) {
+            b.y = FIELD_H - b.r - 0.1;
+            b.vy = -Math.max(Math.abs(b.vy) * 0.5, 1.0);
+            b.isStatic = false;
+        }
 
         obstacles.forEach(o => {
             if (o.type !== 'trench') {
