@@ -285,15 +285,15 @@ function playSound(key) {
 
 /** 2. CONFIG & MODELS **/
 const BOT_MODELS = {
-    'turret': { accel: 0.38, rotSpeed: 0.05, capacity: 105, fireRate: 70, w: 35, h: 35 },
-    'Miss Daisy': { accel: 0.38, rotSpeed: 0.05, capacity: 8, fireRate: 85, w: 35, h: 35 },
-    'double turret':  { accel: 0.38, rotSpeed: 0.05, capacity: 60, fireRate: 60, w: 35, h: 35 },
-    'dumper':  { accel: 0.38, rotSpeed: 0.045, capacity: 110, fireRate: 0, w: 35, h: 35 },
-    'Blitz':  { accel: 0.38, rotSpeed: 0.05, capacity: 15, fireRate: 0, w: 35, h: 35 },
-    '2910':  { accel: 0.38, rotSpeed: 0.05, capacity: 62, fireRate: -0, w: 35, h: 35 },
-    '3636': { accel: 0.38, rotSpeed: 0.036, capacity: 50, fireRate: 180, w: 35, h: 35 },
-    '3636 main season': { accel: 0.36, rotSpeed: 0.036, capacity: 20, fireRate: 500, w: 35, h: 35 },
-    'baguette': { accel: 0.35, rotSpeed: 0.04, capacity: 0, fireRate: 0, w: 20, h: 70 },
+    'turret': { accel: 0.38, rotSpeed: 0.036, capacity: 105, fireRate: 70, w: 41, h: 41 },
+    'Miss Daisy': { accel: 0.38, rotSpeed: 0.036, capacity: 8, fireRate: 85, w: 41, h: 41 },
+    'double turret':  { accel: 0.38, rotSpeed: 0.036, capacity: 60, fireRate: 60, w: 41, h: 41 },
+    'dumper':  { accel: 0.38, rotSpeed: 0.036, capacity: 110, fireRate: 0, w: 41, h: 41 },
+    'Blitz':  { accel: 0.38, rotSpeed: 0.036, capacity: 15, fireRate: 0, w: 41, h: 41 },
+    '2910':  { accel: 0.38, rotSpeed: 0.036, capacity: 62, fireRate: -0, w: 41, h: 41 },
+    '3636': { accel: 0.38, rotSpeed: 0.036, capacity: 50, fireRate: 180, w: 41, h: 41 },
+    '3636 main season': { accel: 0.36, rotSpeed: 0.036, capacity: 20, fireRate: 500, w: 41, h: 41 },
+    'baguette': { accel: 0.35, rotSpeed: 0.036, capacity: 0, fireRate: 0, w: 20, h: 70 }
 };
 
 const S = 1.6; 
@@ -582,8 +582,8 @@ class Robot {
 
         let speedMod = inDepot ? 0.65 : 1.0;
         let passSpeedDampen = this.name === 'Blitz' ? 0.60 : (this.name === 'dumper' ? 0.25 : (this.name === '2910' ? 0.25 : (this.name === '3636' ? 0.8 : (this.name === '3636 main season' ? 1.0 : 0.50))));
-        this.vx += moveX * (onBump ? 0.15 : (this.model.accel * speedMod * (isActionActive ? passSpeedDampen : 1.0)));
-        this.vy += moveY * (onBump ? 0.15 : (this.model.accel * speedMod * (isActionActive ? passSpeedDampen : 1.0)));
+        this.vx += moveX * (onBump ? 0.18 : (this.model.accel * speedMod * (isActionActive ? passSpeedDampen : 1.0)));
+        this.vy += moveY * (onBump ? 0.18 : (this.model.accel * speedMod * (isActionActive ? passSpeedDampen : 1.0)));
 
         let isLockedOn = true;
 
@@ -798,9 +798,9 @@ class Robot {
             }
         } else {
             ctx.fillStyle = "#fbbf24";
-            let bY = (this.name === 'dumper' || this.name === '2910') ? -14 : -12.5;
+            let bY = (this.name === 'dumper' || this.name === '2910') ? -19 : -17.5;
             let bW = (this.name === 'dumper' || this.name === '2910') ? 5 : 6;
-            let bH = (this.name === 'dumper' || this.name === '2910') ? 28 : 25;
+            let bH = (this.name === 'dumper' || this.name === '2910') ? 38 : 35;
             ctx.fillRect(this.model.w/2 - 2, bY, bW, bH);
         }
 
@@ -1348,8 +1348,8 @@ function update() {
                 ix = (bot.x+bot.model.w/2) + Math.cos(bot.angle + intakeAngleOffset)*(bot.model.w/2+5);
                 iy = (bot.y+bot.model.h/2) + Math.sin(bot.angle + intakeAngleOffset)*(bot.model.w/2+5);
             } else {
-                ix = (bot.x+bot.model.w/2) + Math.cos(bot.angle)*(bot.model.w/2+5);
-                iy = (bot.y+bot.model.h/2) + Math.sin(bot.angle)*(bot.model.w/2+5);
+                ix = (bot.x+bot.model.w/2) + Math.cos(bot.angle)*(bot.model.w/2+10);
+                iy = (bot.y+bot.model.h/2) + Math.sin(bot.angle)*(bot.model.w/2+10);
             }
 
             if (Math.hypot(b.x-ix, b.y-iy)<9 && bot.inventory<bot.model.capacity) { bot.inventory++; document.getElementById(alliance==='red'?'heldRed':'heldBlue').innerText = bot.inventory; return false; }
