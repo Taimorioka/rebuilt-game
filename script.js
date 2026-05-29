@@ -10,7 +10,8 @@ const BOT_MODELS = {
     '2910':  { accel: 0.38, rotSpeed: 0.036, capacity: 62, fireRate: -0, w: 41, h: 41 },
     '3636': { accel: 0.38, rotSpeed: 0.036, capacity: 50, fireRate: 180, w: 41, h: 41 },
     '3636 main season': { accel: 0.36, rotSpeed: 0.036, capacity: 20, fireRate: 500, w: 41, h: 41 },
-    'baguette': { accel: 0.35, rotSpeed: 0.036, capacity: 0, fireRate: 0, w: 20, h: 70 }
+    'baguette': { accel: 0.35, rotSpeed: 0.036, capacity: 0, fireRate: 0, w: 20, h: 70 },
+    'turret2': { accel: 0.38, rotSpeed: 0.036, capacity: 50, fireRate: 1, w: 41, h: 41 },
 };
 
 const S = 1.6;
@@ -581,8 +582,8 @@ function resolveBallCollision(b1, b2) {
     }
 }
 
-let botRed = new Robot(80, FIELD_H/2 - 14, 'turret', 0);
-let botBlue = new Robot(FIELD_W - 115, FIELD_H/2 - 14, 'double turret', Math.PI);
+let botRed = new Robot(80, FIELD_H/2 - 14, '2910', 0);
+let botBlue = new Robot(FIELD_W - 115, FIELD_H/2 - 14, '2910', Math.PI);
 let balls = [], projectiles = [], scoringBalls = [], obstacles = [], zones = [];
 let scoreRed = 0, scoreBlue = 0; const keys = {};
 
