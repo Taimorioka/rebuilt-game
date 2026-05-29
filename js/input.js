@@ -1,4 +1,4 @@
-import * as state from './state.js';
+import { gameState as state } from './state.js';
 
 export function getInputs(type, playerId) {
     let x = 0, y = 0, rot = 0, act = false, toggleIn = false;

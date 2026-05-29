@@ -1,4 +1,4 @@
-import * as state from './state.js';
+import { gameState as state } from './state.js';
 
 export function updateHudBar() {
     let hud = document.getElementById('main-hud');

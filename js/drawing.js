@@ -1,5 +1,5 @@
 import { FIELD_W, FIELD_H, WALL_VISUAL, HUB_S, BALL_R } from './constants.js';
-import * as state from './state.js';
+import { gameState as state } from './state.js';
 
 let canvas, ctx;
 

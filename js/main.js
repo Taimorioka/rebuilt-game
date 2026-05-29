@@ -10,7 +10,7 @@ import { initInput, getInputs } from './input.js';
 import { updateHudBar, updateScoresUI, updateGamepadStatusUI, updateHubUI } from './ui.js';
 import { playSound } from './audio.js';
 import { BOT_MODELS } from './robots/botModels.js';
-import * as state from './state.js';
+import { gameState as state } from './state.js';
 
 // Attach references for Robot module
 setGlobalZoneRef(zones);

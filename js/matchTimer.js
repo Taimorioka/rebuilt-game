@@ -1,6 +1,6 @@
 import { MATCH_PHASES, SHIFT_STATES } from './constants.js';
 import { playSound } from './audio.js';
-import * as state from './state.js';
+import { gameState as state } from './state.js';
 import { updateHubUI } from './ui.js';
 
 export function formatTime(s) {
