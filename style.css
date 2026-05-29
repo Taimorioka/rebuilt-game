@@ -93,7 +93,6 @@ button:active { transform: scale(0.95); }
 #reset-btn { background: #333; color: #fff; border-color: #555; margin-top: 5px;}
 #start-btn { background: #22c55e; color: #000; border-color: #22c55e; margin-bottom: 5px;}
 #start-btn.running { background: #f97316; color: #000; border-color: #f97316; }
-#show-controls-btn { background: #3b82f6; border-color: #93c5fd; color: white; margin-bottom: 8px; }
 
 .btn-unstick { background: #991b1b !important; border-color: #fca5a5 !important; }
 .btn-unstick.blue-team { background: #1e3a8a !important; border-color: #93c5fd !important; }

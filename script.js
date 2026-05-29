@@ -314,18 +314,26 @@ class Robot {
         if ((this.name === 'dumper' || this.name === '2910') && isActionActive && !inTower && !isDisrupted) {
             let tx = isShootingZone ? zones.find(z => z.type === 'hub' && z.side === alliance).x + HUB_S/2 : (alliance === 'red' ? 40 : FIELD_W - 40);
             let ty = isShootingZone ? zones.find(z => z.type === 'hub' && z.side === alliance).y + HUB_S/2 : (rcy < FIELD_H/2 ? 40 : FIELD_H - 40);
-            let diff = Math.atan2(ty - rcy, tx - rcx) + Math.PI - this.angle;
+            let targetAngle = Math.atan2(ty - rcy, tx - rcx) + Math.PI;
+            let diff = targetAngle - this.angle;
             while (diff < -Math.PI) diff += Math.PI * 2; while (diff > Math.PI) diff -= Math.PI * 2;
-            let autoSpeedCap = 0.20 * speedMod * (isShootingZone ? 0.45 : 0.6);
-            if (collidingWithOther()) autoSpeedCap *= 0.2;
-            this.vAngle = Math.max(-autoSpeedCap, Math.min(autoSpeedCap, diff * 0.45));
-            if (Math.abs(diff) > 0.04) isLockedOn = false;
+
+            // Torque (angular acceleration) limits
+            let maxTorque = 0.032 * speedMod * (isShootingZone ? 0.55 : 0.7);
+            if (collidingWithOther()) maxTorque *= 0.3;
+            let torqueGain = 0.55;
+            let torque = Math.max(-maxTorque, Math.min(maxTorque, diff * torqueGain));
+            this.vAngle += torque;
+
+            // Lock‑on threshold (slightly wider to avoid chattering)
+            const lockThreshold = 0.07;
+            if (Math.abs(diff) > lockThreshold) isLockedOn = false;
         } else if (this.name === 'Blitz' && isActionActive && !inTower && !isDisrupted) {
-            let diff = 0;
+            let targetAngle;
             if (isShootingZone) {
                 let tx = zones.find(z => z.type === 'hub' && z.side === alliance).x + HUB_S/2;
                 let ty = zones.find(z => z.type === 'hub' && z.side === alliance).y + HUB_S/2;
-                diff = Math.atan2(ty - rcy, tx - rcx) - this.angle;
+                targetAngle = Math.atan2(ty - rcy, tx - rcx) + Math.PI;
             } else {
                 let targetX = alliance === 'red' ? 0 : FIELD_W;
                 let targetY = rcy;
@@ -335,14 +343,20 @@ class Robot {
                     if (rcy < hubYCenter) targetY = hubYCenter - hubClearance;
                     else targetY = hubYCenter + hubClearance;
                 }
-                let targetAngle = Math.atan2(targetY - rcy, targetX - rcx);
-                diff = targetAngle - this.angle;
+                targetAngle = Math.atan2(targetY - rcy, targetX - rcx);
             }
+            let diff = targetAngle - this.angle;
             while (diff < -Math.PI) diff += Math.PI * 2; while (diff > Math.PI) diff -= Math.PI * 2;
-            let autoSpeedCap = 0.20 * speedMod * (isShootingZone ? 0.45 : 0.6);
-            if (collidingWithOther()) autoSpeedCap *= 0.2;
-            this.vAngle = Math.max(-autoSpeedCap, Math.min(autoSpeedCap, diff * 0.45));
-            if (Math.abs(diff) > 0.06) isLockedOn = false;
+
+            // Torque limits – Blitz turns a bit faster
+            let maxTorque = 0.040 * speedMod * (isShootingZone ? 0.55 : 0.7);
+            if (collidingWithOther()) maxTorque *= 0.3;
+            let torqueGain = 0.65;
+            let torque = Math.max(-maxTorque, Math.min(maxTorque, diff * torqueGain));
+            this.vAngle += torque;
+
+            const lockThreshold = 0.08;
+            if (Math.abs(diff) > lockThreshold) isLockedOn = false;
         } else {
             this.vAngle += rotInput * (this.model.rotSpeed * speedMod * (isActionActive ? (isShootingZone ? 0.45 : 0.6) : 1.0));
         }
@@ -511,29 +525,6 @@ class Robot {
             let bW = (this.name === 'dumper' || this.name === '2910') ? 5 : 6;
             let bH = (this.name === 'dumper' || this.name === '2910') ? 38 : 35;
             ctx.fillRect(this.model.w/2 - 2, bY, bW, bH);
-        }
-
-        // Check trench collision indicator
-        if (matchRunning) {
-            const robots = p2Enabled ? [botRed, botBlue] : [botRed];
-            for (let bot of robots) {
-                if (bot.inventory >=  85) {
-                    ctx.save();
-                    ctx.font = 'bold 32px "Segoe UI", system-ui';
-                    ctx.textAlign = 'center';
-                    ctx.shadowBlur = 0;
-                    const worldX = bot.x + bot.model.w/2;
-                    const worldY = bot.y + bot.model.h/2 - bot.model.h/2 - 10;
-                    // White outline
-                    ctx.lineWidth = 3;
-                    ctx.strokeStyle = '#ffffff';
-                    ctx.strokeText('⚠', worldX, worldY);
-                    // Red fill
-                    ctx.fillStyle = '#ff0000';
-                    ctx.fillText('⚠', worldX, worldY);
-                    ctx.restore();
-                }
-            }
         }
 
         ctx.rotate(-this.angle); ctx.fillStyle = "#fff"; ctx.font = "bold 14px Segoe UI"; ctx.textAlign = "center"; ctx.fillText(this.inventory, 0, 5); ctx.restore();
@@ -1356,12 +1347,6 @@ document.getElementById('toggle-controls-btn').onclick = function() {
 };
 
 // ── CONTROLS MODAL LOGIC ── //
-document.getElementById('show-controls-btn').onclick = function() {
-    document.getElementById('controls-modal').classList.remove('hidden');
-};
-document.getElementById('close-controls-btn').onclick = function() {
-    document.getElementById('controls-modal').classList.add('hidden');
-};
 
 document.getElementById('team-mode-toggle').onclick = function() {
     sameTeamMode = !sameTeamMode; this.innerText = "TEAM: " + (sameTeamMode ? "CO-OP (RED)" : "SEPARATE");
