@@ -277,7 +277,7 @@ class Robot {
         const myOBB = getOBB(this);
         zones.forEach(z => {
             if (z.type === 'bump' && collideOBB_AABB(myOBB, z).colliding) onBump = true;
-            if (z.type === 'tower' && collideOBB_AABB(myOBB, z).colliding) inTower = true;
+            if (z.type === 'tower' && (collideOBB_AABB(myOBB, z).overlap >= 25))inTower = true;
             if (z.type === 'depot' && collideOBB_AABB(myOBB, z).colliding) inDepot = true;
         });
 
@@ -659,7 +659,7 @@ function getInputs(type, playerId) {   // playerId: 0 for P1, 1 for P2
         if (keys['ArrowUp']) y = -1; if (keys['ArrowDown']) y = 1; if (keys['ArrowLeft']) x = -1; if (keys['ArrowRight']) x = 1;
         if (keys['KeyN']) rot = -1; if (keys['KeyM']) rot = 1;
         if (keys['ShiftRight']) act = true;
-        if (keys['KeyE']) toggleIn = true;
+        if (keys['KeyL']) toggleIn = true;
     }
     else if (type === 'controller') {
         // Choose which gamepad index based on player
