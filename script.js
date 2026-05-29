@@ -353,50 +353,46 @@ class Robot {
         let newX = this.x + this.vx;
         let newY = this.y + this.vy;
 
-        // Helper to test OBB vs obstacle and resolve
-        const tryMove = (x, y) => {
+        const resolveCollisions = (x, y) => {
             let testBot = { ...this, x, y };
-            let testOBB = getOBB(testBot);
+            let iterations = 0;
+            const maxIter = 5;
+            let anyCollision = false;
 
-            for (let o of obstacles) {
-                if (o.type === 'trench' && this.inventory < 85) continue;
+            do {
+                anyCollision = false;
+                let testOBB = getOBB(testBot);
 
-                const collision = collideOBB_AABB(testOBB, o);
-
-                if (collision.colliding) {
-                    // Push out along MTV
-                    const mtv = {
-                        x: collision.axis.x * collision.overlap,
-                        y: collision.axis.y * collision.overlap
-                    };
-
-                    x -= mtv.x;
-                    y -= mtv.y;
-
-                    testBot.x = x;
-                    testBot.y = y;
-                    testOBB = getOBB(testBot);
-
-                    break;
+                for (let o of obstacles) {
+                    if (o.type === 'trench' && this.inventory < 85) continue;
+                    const collision = collideOBB_AABB(testOBB, o);
+                    if (collision.colliding) {
+                        anyCollision = true;
+                        // Apply MTV
+                        testBot.x -= collision.axis.x * collision.overlap;
+                        testBot.y -= collision.axis.y * collision.overlap;
+                        // Recompute OBB for next iteration
+                        testOBB = getOBB(testBot);
+                        break; // restart loop because OBB changed
+                    }
                 }
-            }
+                iterations++;
+            } while (anyCollision && iterations < maxIter);
 
-            // Properly clamp TEST position to field bounds
+            // Clamp to field bounds using OBB AABB
             const aabb = getOBB_AABB(testBot);
+            if (aabb.minX < 0) testBot.x += (0 - aabb.minX);
+            if (aabb.maxX > FIELD_W) testBot.x -= (aabb.maxX - FIELD_W);
+            if (aabb.minY < 0) testBot.y += (0 - aabb.minY);
+            if (aabb.maxY > FIELD_H) testBot.y -= (aabb.maxY - FIELD_H);
 
-            if (aabb.minX < 0) x += (0 - aabb.minX);
-            if (aabb.maxX > FIELD_W) x -= (aabb.maxX - FIELD_W);
-            if (aabb.minY < 0) y += (0 - aabb.minY);
-            if (aabb.maxY > FIELD_H) y -= (aabb.maxY - FIELD_H);
-
-            return { x, y };
+            return { x: testBot.x, y: testBot.y };
         };
 
-        const resultX = tryMove(newX, this.y);
+        const resultX = resolveCollisions(newX, this.y);
         const finalX = resultX.x;
-        const resultY = tryMove(this.x, newY);
+        const resultY = resolveCollisions(this.x, newY);
         const finalY = resultY.y;
-
         this.x = finalX;
         this.y = finalY;
         this.angle += this.vAngle;
@@ -546,13 +542,51 @@ class Robot {
 
 /** 5. PHYSICS & MAP SETUP **/
 function resolveBallCollision(b1, b2) {
-    let dx = b2.x - b1.x, dy = b2.y - b1.y, distSq = dx*dx + dy*dy, minDist = b1.r + b2.r;
-    if (distSq < minDist * minDist) {
-        let dist = Math.sqrt(distSq); if (dist === 0) { dx = 1; dy = 0; dist = 1; }
-        let nx = dx / dist, ny = dy / dist, overlap = (minDist - dist), force = overlap * 0.45;
-        b1.vx -= nx * force; b1.vy -= ny * force; b2.vx += nx * force; b2.vy += ny * force;
-        if (overlap > 0.1) { b1.isStatic = false; b2.isStatic = false; }
-        b1.x -= nx*overlap*0.05; b1.y -= ny*overlap*0.05; b2.x += nx*overlap*0.05; b2.y += ny*overlap*0.05;
+    let dx = b2.x - b1.x, dy = b2.y - b1.y;
+    let dist = Math.hypot(dx, dy);
+    const minDist = b1.r + b2.r;
+    if (dist >= minDist) return;
+
+    // Guard against identical positions
+    if (dist === 0) {
+        // Arbitrary separation direction (right)
+        dx = 1; dy = 0;
+        dist = 1;
+    }
+
+    const nx = dx / dist;
+    const ny = dy / dist;
+    const overlap = minDist - dist;
+
+    // Position correction (split equally)
+    const correction = overlap * 0.5;
+    b1.x -= nx * correction;
+    b1.y -= ny * correction;
+    b2.x += nx * correction;
+    b2.y += ny * correction;
+
+    // Relative velocity along the normal
+    const vrelX = b2.vx - b1.vx;
+    const vrelY = b2.vy - b1.vy;
+    const velAlong = vrelX * nx + vrelY * ny;
+    if (velAlong > 0) return;
+
+    const e = 0.6;           // restitution (bounciness)
+    const impulse = -(1 + e) * velAlong / 2;   // equal masses → denominator 2
+
+    b1.vx -= impulse * nx;
+    b1.vy -= impulse * ny;
+    b2.vx += impulse * nx;
+    b2.vy += impulse * ny;
+
+    // Optional: prevent excessive speed (helps avoid tunneling)
+    const maxSpeed = 22;
+    for (let b of [b1, b2]) {
+        let spd = Math.hypot(b.vx, b.vy);
+        if (spd > maxSpeed) {
+            b.vx = (b.vx / spd) * maxSpeed;
+            b.vy = (b.vy / spd) * maxSpeed;
+        }
     }
 }
 
@@ -1072,10 +1106,28 @@ function update() {
             if (rCol.hit) {
                 b.isStatic = false;
                 b.owner = alliance;
+
+                // Position correction
                 b.x += rCol.nx * rCol.overlap;
                 b.y += rCol.ny * rCol.overlap;
-                b.vx += rCol.nx * (Math.abs(bot.vx) * 0.5 + 1.0);
-                b.vy += rCol.ny * (Math.abs(bot.vy) * 0.5 + 1.0);
+
+                // Relative velocity between ball and robot's center of mass
+                const robotCenter = { x: bot.x + bot.model.w/2, y: bot.y + bot.model.h/2 };
+                const ballToCenter = { x: robotCenter.x - b.x, y: robotCenter.y - b.y };
+                const robotVelAtContact = {
+                    x: bot.vx - bot.vAngle * ballToCenter.y,
+                    y: bot.vy + bot.vAngle * ballToCenter.x
+                };
+                const relVelX = b.vx - robotVelAtContact.x;
+                const relVelY = b.vy - robotVelAtContact.y;
+                const velAlong = relVelX * rCol.nx + relVelY * rCol.ny;
+                if (velAlong < 0) {
+                    const e = 0.5;
+                    const mBall = 1, mRobot = 3; // robot is heavier
+                    const impulse = -(1 + e) * velAlong / (1/mBall + 1/mRobot);
+                    b.vx += (impulse / mBall) * rCol.nx;
+                    b.vy += (impulse / mBall) * rCol.ny;
+                }
             }
         }
 
