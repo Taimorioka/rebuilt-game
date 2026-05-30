@@ -334,7 +334,7 @@ class Robot {
             if (isShootingZone) {
                 let tx = zones.find(z => z.type === 'hub' && z.side === alliance).x + HUB_S/2;
                 let ty = zones.find(z => z.type === 'hub' && z.side === alliance).y + HUB_S/2;
-                targetAngle = Math.atan2(ty - rcy, tx - rcx) + Math.PI;
+                targetAngle = Math.atan2(ty - rcy, tx - rcx);
             } else {
                 let targetX = alliance === 'red' ? 0 : FIELD_W;
                 let targetY = rcy;
