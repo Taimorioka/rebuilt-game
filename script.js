@@ -252,6 +252,9 @@ class Robot {
     }
 
     update(moveX, moveY, rotInput, rawActInput, rawToggleInput, alliance, obstacles, zones, otherBot = null) {
+
+        if (typeof alliance === 'undefined') alliance = 'red';
+
         if (isNaN(this.x) || isNaN(this.y) || isNaN(this.vx) || isNaN(this.vy)) {
             this.x = alliance === 'red' ? 80 : FIELD_W - 115;
             this.y = FIELD_H/2 - 14; this.vx = 0; this.vy = 0; this.vAngle = 0;
