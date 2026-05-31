@@ -1039,95 +1039,87 @@ function update() {
     }
 
     balls = balls.filter(b => {
-        let onB = false; zones.forEach(z => { if (z.type==='bump' && b.x>z.x && b.x<z.x+z.w && b.y>z.y && b.y<z.y+z.h) { onB = true; b.isStatic = false; b.vx += (b.x<z.x+z.w/2)?-0.12:0.12; } });
-        if (!onB && b.wasOnBump) { b.vx *= 0.15; b.vy *= 0.15; } b.wasOnBump = onB;
-        if (!b.isStatic) { b.x += b.vx; b.y += b.vy; let f = (b.rollTimer && now < b.rollTimer) ? b.frictionMod : (onB?0.96:0.91); b.vx *= f; b.vy *= f; if (Math.hypot(b.vx, b.vy) < 0.15) { b.vx=0; b.vy=0; b.isStatic=true; } }
+        if (!badAppleActive) {
+            // Normal physics and collision handling
+            let onB = false;
+            zones.forEach(z => { if (z.type==='bump' && b.x>z.x && b.x<z.x+z.w && b.y>z.y && b.y<z.y+z.h) { onB = true; b.isStatic = false; b.vx += (b.x<z.x+z.w/2)?-0.12:0.12; } });
+            if (!onB && b.wasOnBump) { b.vx *= 0.15; b.vy *= 0.15; } b.wasOnBump = onB;
+            if (!b.isStatic) { b.x += b.vx; b.y += b.vy; let f = (b.rollTimer && now < b.rollTimer) ? b.frictionMod : (onB?0.96:0.91); b.vx *= f; b.vy *= f; if (Math.hypot(b.vx, b.vy) < 0.15) { b.vx=0; b.vy=0; b.isStatic=true; } }
 
-        if (b.x < b.r) {
-            b.x = b.r + 0.1; // slight push out
-            b.vx = Math.max(Math.abs(b.vx) * 0.5, 1.0); // minimum bounce away
-            b.isStatic = false;
-        }
-        if (b.x > FIELD_W - b.r) {
-            b.x = FIELD_W - b.r - 0.1;
-            b.vx = -Math.max(Math.abs(b.vx) * 0.5, 1.0);
-            b.isStatic = false;
-        }
-        if (b.y < b.r) {
-            b.y = b.r + 0.1;
-            b.vy = Math.max(Math.abs(b.vy) * 0.5, 1.0);
-            b.isStatic = false;
-        }
-        if (b.y > FIELD_H - b.r) {
-            b.y = FIELD_H - b.r - 0.1;
-            b.vy = -Math.max(Math.abs(b.vy) * 0.5, 1.0);
-            b.isStatic = false;
-        }
+            // Boundary & obstacle collisions (same as before)
+            if (b.x < b.r) { b.x = b.r + 0.1; b.vx = Math.max(Math.abs(b.vx) * 0.5, 1.0); b.isStatic = false; }
+            if (b.x > FIELD_W - b.r) { b.x = FIELD_W - b.r - 0.1; b.vx = -Math.max(Math.abs(b.vx) * 0.5, 1.0); b.isStatic = false; }
+            if (b.y < b.r) { b.y = b.r + 0.1; b.vy = Math.max(Math.abs(b.vy) * 0.5, 1.0); b.isStatic = false; }
+            if (b.y > FIELD_H - b.r) { b.y = FIELD_H - b.r - 0.1; b.vy = -Math.max(Math.abs(b.vy) * 0.5, 1.0); b.isStatic = false; }
 
-        obstacles.forEach(o => {
-            if (o.type !== 'trench') {
-                let col = circleRectCollision(b, o);
-                if (col.hit) {
+            obstacles.forEach(o => {
+                if (o.type !== 'trench') {
+                    let col = circleRectCollision(b, o);
+                    if (col.hit) {
+                        b.isStatic = false;
+                        b.vx *= 0.8;
+                        b.vy *= 0.8;
+                        b.x += col.nx * col.overlap;
+                        b.y += col.ny * col.overlap;
+                    }
+                }
+            });
+
+            // Robot intakes & collisions (unchanged)
+            let activeBots = p2Enabled ? [botRed, botBlue] : [botRed];
+            for(let bot of activeBots) {
+                let alliance = bot === botRed ? 'red' : (sameTeamMode ? 'red' : 'blue');
+                let ix, iy;
+
+                if (bot.name === 'Blitz') {
+                    let intakeAngleOffset = bot.intakeSide === 'right' ? Math.PI/2 : -Math.PI/2;
+                    ix = (bot.x+bot.model.w/2) + Math.cos(bot.angle + intakeAngleOffset)*(bot.model.w/2+5);
+                    iy = (bot.y+bot.model.h/2) + Math.sin(bot.angle + intakeAngleOffset)*(bot.model.w/2+5);
+                } else {
+                    ix = (bot.x+bot.model.w/2) + Math.cos(bot.angle)*(bot.model.w/2+10);
+                    iy = (bot.y+bot.model.h/2) + Math.sin(bot.angle)*(bot.model.w/2+10);
+                }
+
+                if (Math.hypot(b.x-ix, b.y-iy)<9 && bot.inventory<bot.model.capacity) {
+                    bot.inventory++;
+                    document.getElementById(alliance==='red'?'heldRed':'heldBlue').innerText = bot.inventory;
+                    return false;
+                }
+
+                const obb = getOBB(bot);
+                let rCol = circleOBBCollision(b, obb);
+                if (rCol.hit) {
                     b.isStatic = false;
-                    b.vx *= 0.8;
-                    b.vy *= 0.8;
-                    b.x += col.nx * col.overlap;
-                    b.y += col.ny * col.overlap;
+                    b.owner = alliance;
+                    b.x += rCol.nx * rCol.overlap;
+                    b.y += rCol.ny * rCol.overlap;
+                    const robotCenter = { x: bot.x + bot.model.w/2, y: bot.y + bot.model.h/2 };
+                    const ballToCenter = { x: robotCenter.x - b.x, y: robotCenter.y - b.y };
+                    const robotVelAtContact = {
+                        x: bot.vx - bot.vAngle * ballToCenter.y,
+                        y: bot.vy + bot.vAngle * ballToCenter.x
+                    };
+                    const relVelX = b.vx - robotVelAtContact.x;
+                    const relVelY = b.vy - robotVelAtContact.y;
+                    const velAlong = relVelX * rCol.nx + relVelY * rCol.ny;
+                    if (velAlong < 0) {
+                        const e = 0.5;
+                        const mBall = 1, mRobot = 3;
+                        const impulse = -(1 + e) * velAlong / (1/mBall + 1/mRobot);
+                        b.vx += (impulse / mBall) * rCol.nx;
+                        b.vy += (impulse / mBall) * rCol.ny;
+                    }
                 }
             }
-        });
 
-        let activeBots = p2Enabled ? [botRed, botBlue] : [botRed];
-        for(let bot of activeBots) {
-            let alliance = bot === botRed ? 'red' : (sameTeamMode ? 'red' : 'blue');
-            let ix, iy;
-
-            if (bot.name === 'Blitz') {
-                let intakeAngleOffset = bot.intakeSide === 'right' ? Math.PI/2 : -Math.PI/2;
-                ix = (bot.x+bot.model.w/2) + Math.cos(bot.angle + intakeAngleOffset)*(bot.model.w/2+5);
-                iy = (bot.y+bot.model.h/2) + Math.sin(bot.angle + intakeAngleOffset)*(bot.model.w/2+5);
-            } else {
-                ix = (bot.x+bot.model.w/2) + Math.cos(bot.angle)*(bot.model.w/2+10);
-                iy = (bot.y+bot.model.h/2) + Math.sin(bot.angle)*(bot.model.w/2+10);
+            let speed = Math.hypot(b.vx, b.vy);
+            if (speed > 25) {
+                b.vx = (b.vx / speed) * 25;
+                b.vy = (b.vy / speed) * 25;
             }
-
-            if (Math.hypot(b.x-ix, b.y-iy)<9 && bot.inventory<bot.model.capacity) { bot.inventory++; document.getElementById(alliance==='red'?'heldRed':'heldBlue').innerText = bot.inventory; return false; }
-
-            const obb = getOBB(bot);
-            let rCol = circleOBBCollision(b, obb);
-            if (rCol.hit) {
-                b.isStatic = false;
-                b.owner = alliance;
-
-                // Position correction
-                b.x += rCol.nx * rCol.overlap;
-                b.y += rCol.ny * rCol.overlap;
-
-                // Relative velocity between ball and robot's center of mass
-                const robotCenter = { x: bot.x + bot.model.w/2, y: bot.y + bot.model.h/2 };
-                const ballToCenter = { x: robotCenter.x - b.x, y: robotCenter.y - b.y };
-                const robotVelAtContact = {
-                    x: bot.vx - bot.vAngle * ballToCenter.y,
-                    y: bot.vy + bot.vAngle * ballToCenter.x
-                };
-                const relVelX = b.vx - robotVelAtContact.x;
-                const relVelY = b.vy - robotVelAtContact.y;
-                const velAlong = relVelX * rCol.nx + relVelY * rCol.ny;
-                if (velAlong < 0) {
-                    const e = 0.5;
-                    const mBall = 1, mRobot = 3; // robot is heavier
-                    const impulse = -(1 + e) * velAlong / (1/mBall + 1/mRobot);
-                    b.vx += (impulse / mBall) * rCol.nx;
-                    b.vy += (impulse / mBall) * rCol.ny;
-                }
-            }
+            return true;
         }
-
-        let speed = Math.hypot(b.vx, b.vy);
-        if (speed > 25) {
-            b.vx = (b.vx / speed) * 25;
-            b.vy = (b.vy / speed) * 25;
-        }
+        // When Bad Apple is active, keep all balls as they are (no physics modifications)
         return true;
     });
 
@@ -1451,141 +1443,96 @@ document.getElementById('reset-btn').onclick = () => {
 //}
 
 // ========== CONFIGURATION ==========
-
-let isLoading = false;
-let badApplePlaying = false;
+const COLS = 40;
+const ROWS = 20;
+const BRIGHTNESS_THRESHOLD = 128;
+const video = document.getElementById('videoPlayer');
+let samplingCanvas = null;
+let samplingCtx = null;
+let badAppleActive = false;
 let badAppleSamplingId = null;
 
-const COLS = 30;
-const ROWS = 20;
-const FPS = 1;
-const BRIGHTNESS_THRESHOLD = 128;
-const TOTAL_FRAMES = 219;
+function stopBadApple() {
+    if (!badAppleActive) return;
+    badAppleActive = false;
+    if (badAppleSamplingId) {
+        cancelAnimationFrame(badAppleSamplingId);
+        badAppleSamplingId = null;
+    }
+    video.pause();
+    video.currentTime = 0;
+}
 
-const STEP_X = FIELD_W / COLS;
-const STEP_Y = FIELD_H / ROWS;
+function startBadApple() {
+    if (badAppleActive) {
+        stopBadApple();
+        return;
+    }
 
-let frameImages = [];           // ImageData for each frame
-let allBalls = [];              // pre‑created ball objects (never changes)
-let currentFrameIndex = -1;     // avoid redundant updates
-let animationStartTime = 0;
-let animationId = null;
+    if (badAppleSamplingId) cancelAnimationFrame(badAppleSamplingId);
 
-const X_MIN = FIELD_W / 2 - FIELD_W / 6;
-const X_MAX = FIELD_W / 2 + FIELD_W / 6;
-const Y_MIN = FIELD_H / 2 - FIELD_H / 6;
-const Y_MAX = FIELD_H / 2 + FIELD_H / 6;
+    badAppleActive = true;
 
-// ========== PRE‑CREATE BALLS ONLY INSIDE THE CENTRAL BOUNDS ==========
-function initAllBalls() {
-    allBalls = [];
-    for (let row = 0; row < ROWS; row++) {
-        for (let col = 0; col < COLS; col++) {
-            // Map col 0..COLS-1 to X_MIN..X_MAX
-            const t_x = col / (COLS - 1);
-            const x = X_MIN + t_x * (X_MAX - X_MIN);
-            // Map row 0..ROWS-1 to Y_MIN..Y_MAX
-            const t_y = row / (ROWS - 1);
-            const y = Y_MIN + t_y * (Y_MAX - Y_MIN);
+    if (!samplingCanvas) {
+        samplingCanvas = document.createElement('canvas');
+        samplingCanvas.width = COLS;
+        samplingCanvas.height = ROWS;
+        samplingCtx = samplingCanvas.getContext('2d');
+    }
 
-            allBalls.push({
-                x: x,
-                y: y,
-                r: BALL_R,
-                vx: 0,
-                vy: 0,
-                isStatic: true,
-                frictionMod: 1.0,
-                wasOnBump: false,
-                owner: null,
-                row: row,   // keep grid position for pixel lookup
-                col: col
-            });
+    video.currentTime = 0;
+    video.play().catch(e => console.warn("Video play failed:", e));
+
+    function sampleVideoFrame() {
+        if (!badAppleActive) return;
+
+        if (video.readyState >= 2 && !video.paused && video.currentTime > 0) {
+            try {
+                samplingCtx.drawImage(video, 0, 0, COLS, ROWS);
+                const imageData = samplingCtx.getImageData(0, 0, COLS, ROWS);
+                const data = imageData.data;
+
+                const X_MIN = FIELD_W / 2 - FIELD_W / 6;
+                const X_MAX = FIELD_W / 2 + FIELD_W / 6;
+                const Y_MIN = FIELD_H / 2 - FIELD_H / 6;
+                const Y_MAX = FIELD_H / 2 + FIELD_H / 6;
+
+                const newBalls = [];
+                const stepX = (X_MAX - X_MIN) / (COLS - 1);
+                const stepY = (Y_MAX - Y_MIN) / (ROWS - 1);
+
+                for (let row = 0; row < ROWS; row++) {
+                    for (let col = 0; col < COLS; col++) {
+                        const idx = (row * COLS + col) * 4;
+                        const brightness = data[idx]; // Red channel
+                        if (brightness >= BRIGHTNESS_THRESHOLD) {
+                            newBalls.push({
+                                x: X_MIN + col * stepX,
+                                y: Y_MIN + row * stepY,
+                                r: BALL_R,
+                                vx: 0, vy: 0,
+                                isStatic: true,
+                                frictionMod: 1.0,
+                                wasOnBump: false,
+                                owner: null
+                            });
+                        }
+                    }
+                }
+                balls = newBalls;
+            } catch(e) { console.warn(e); }
+        }
+
+        if (badAppleActive) {
+            badAppleSamplingId = requestAnimationFrame(() => setTimeout(sampleVideoFrame, 34));
         }
     }
+
+    sampleVideoFrame();
 }
 
-// ========== BUILD VISIBLE BALLS FROM FRAME (using stored row/col) ==========
-function updateVisibleBallsFromFrame(frameIndex) {
-    const imageData = frameImages[frameIndex];
-    if (!imageData) return;
-
-    const data = imageData.data;
-    const newBalls = [];
-
-    for (let i = 0; i < allBalls.length; i++) {
-        const ball = allBalls[i];
-        const idx = (ball.row * COLS + ball.col) * 4;
-        const brightness = data[idx];
-        if (brightness >= BRIGHTNESS_THRESHOLD) {
-            // Reset dynamic properties
-            ball.vx = 0;
-            ball.vy = 0;
-            ball.isStatic = true;
-            ball.frictionMod = 1.0;
-            ball.wasOnBump = false;
-            ball.owner = null;
-            newBalls.push(ball);
-        }
-    }
-    balls = newBalls;
-}
-
-// ========== LOAD ALL FRAMES ==========
-function loadFrames(frameCount, callback) {
-    let loaded = 0;
-    frameImages = new Array(frameCount);
-    for (let i = 1; i <= frameCount; i++) {
-        const img = new Image();
-        img.onload = (function(idx) {
-            return function() {
-                const canvas = document.createElement('canvas');
-                canvas.width = COLS;
-                canvas.height = ROWS;
-                const ctx = canvas.getContext('2d');
-                ctx.drawImage(this, 0, 0, COLS, ROWS);
-                frameImages[idx] = ctx.getImageData(0, 0, COLS, ROWS);
-                if (++loaded === frameCount && callback) callback();
-            };
-        })(i - 1);
-        img.src = `frames/frame_${String(i)}.jpg`;
-    }
-}
-
-// ========== ANIMATION LOOP ==========
-function animate() {
-    if (!animationStartTime) return;
-
-    const now = Date.now();
-    const elapsedSec = (now - animationStartTime) / 1000;
-    const newFrameIndex = Math.floor(elapsedSec * FPS) % TOTAL_FRAMES;
-
-    if (newFrameIndex !== currentFrameIndex) {
-        currentFrameIndex = newFrameIndex;
-        updateVisibleBallsFromFrame(currentFrameIndex);
-    }
-
-    if (typeof draw === 'function') draw();
-
-    animationId = requestAnimationFrame(animate);
-}
-
-// ========== BUTTON HANDLER ==========
-document.getElementById('bad-apple').onclick = () => {
-    if (animationId) cancelAnimationFrame(animationId);
-
-    if (allBalls.length === 0) initAllBalls();
-
-    if (frameImages.length === 0) {
-        loadFrames(TOTAL_FRAMES, () => {
-            animationStartTime = Date.now();
-            animate();
-        });
-    } else {
-        animationStartTime = Date.now();
-        animate();
-    }
-};
+// ========== BUTTON HANDLER (FIXED) ==========
+document.getElementById('bad-apple').onclick = () => startBadApple();
 
 // Initially hide controls panel
 document.getElementById('control-panel').classList.add('collapsed');
