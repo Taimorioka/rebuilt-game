@@ -1064,28 +1064,32 @@ function update() {
                     }
                 }
             });
+        }
 
-            // Robot intakes & collisions (unchanged)
-            let activeBots = p2Enabled ? [botRed, botBlue] : [botRed];
+        // Robot intakes & collisions (unchanged)
+        let activeBots = p2Enabled ? [botRed, botBlue] : [botRed];
+        for(let bot of activeBots) {
+            let alliance = bot === botRed ? 'red' : (sameTeamMode ? 'red' : 'blue');
+            let ix, iy;
+
+            if (bot.name === 'Blitz') {
+                let intakeAngleOffset = bot.intakeSide === 'right' ? Math.PI/2 : -Math.PI/2;
+                ix = (bot.x+bot.model.w/2) + Math.cos(bot.angle + intakeAngleOffset)*(bot.model.w/2+5);
+                iy = (bot.y+bot.model.h/2) + Math.sin(bot.angle + intakeAngleOffset)*(bot.model.w/2+5);
+            } else {
+                ix = (bot.x+bot.model.w/2) + Math.cos(bot.angle)*(bot.model.w/2+10);
+                iy = (bot.y+bot.model.h/2) + Math.sin(bot.angle)*(bot.model.w/2+10);
+            }
+
+            if (Math.hypot(b.x-ix, b.y-iy)<9 && bot.inventory<bot.model.capacity) {
+                bot.inventory++;
+                document.getElementById(alliance==='red'?'heldRed':'heldBlue').innerText = bot.inventory;
+                return false;
+            }
+        }
+
+        if (!badAppleActive) {
             for(let bot of activeBots) {
-                let alliance = bot === botRed ? 'red' : (sameTeamMode ? 'red' : 'blue');
-                let ix, iy;
-
-                if (bot.name === 'Blitz') {
-                    let intakeAngleOffset = bot.intakeSide === 'right' ? Math.PI/2 : -Math.PI/2;
-                    ix = (bot.x+bot.model.w/2) + Math.cos(bot.angle + intakeAngleOffset)*(bot.model.w/2+5);
-                    iy = (bot.y+bot.model.h/2) + Math.sin(bot.angle + intakeAngleOffset)*(bot.model.w/2+5);
-                } else {
-                    ix = (bot.x+bot.model.w/2) + Math.cos(bot.angle)*(bot.model.w/2+10);
-                    iy = (bot.y+bot.model.h/2) + Math.sin(bot.angle)*(bot.model.w/2+10);
-                }
-
-                if (Math.hypot(b.x-ix, b.y-iy)<9 && bot.inventory<bot.model.capacity) {
-                    bot.inventory++;
-                    document.getElementById(alliance==='red'?'heldRed':'heldBlue').innerText = bot.inventory;
-                    return false;
-                }
-
                 const obb = getOBB(bot);
                 let rCol = circleOBBCollision(b, obb);
                 if (rCol.hit) {
@@ -1119,7 +1123,6 @@ function update() {
             }
             return true;
         }
-        // When Bad Apple is active, keep all balls as they are (no physics modifications)
         return true;
     });
 
@@ -1531,7 +1534,6 @@ function startBadApple() {
     sampleVideoFrame();
 }
 
-// ========== BUTTON HANDLER (FIXED) ==========
 document.getElementById('bad-apple').onclick = () => startBadApple();
 
 // Initially hide controls panel
