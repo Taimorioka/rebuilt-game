@@ -1360,6 +1360,7 @@ document.getElementById('team-mode-toggle').onclick = function() {
     else if (!sameTeamMode && p2UnstickUsed) document.getElementById('p2-unstick').classList.add('disabled');
 
     document.getElementById('reset-btn').click();
+    document.getElementById('bad-apple').click();
 };
 document.getElementById('p1-input-toggle').onclick = function() {
     p1Input = p1Input === 'keyboard' ? 'keyboard2' : p1Input === 'keyboard2' ? 'controller' : 'keyboard';
@@ -1438,6 +1439,152 @@ document.getElementById('reset-btn').onclick = () => {
     document.getElementById('p2-unstick').classList.add('disabled');
 
     updateHubUI(false, false); spawnBalls(); resetBots();
+};
+
+//document.getElementById('bad-apple').onclick = () => {
+//    balls = [];
+//    let bounds = FIELD_W / 6.0
+//    balls.push({ x: FIELD_W / 2.0 + bounds, y: FIELD_H / 2.0 + bounds, r: BALL_R, vx: 0, vy: 0, isStatic: true, frictionMod: 1.0, wasOnBump: false, owner: null });
+//    balls.push({ x: FIELD_W / 2.0 + bounds, y: FIELD_H / 2.0 - bounds, r: BALL_R, vx: 0, vy: 0, isStatic: true, frictionMod: 1.0, wasOnBump: false, owner: null });
+//    balls.push({ x: FIELD_W / 2.0 - bounds, y: FIELD_H / 2.0 + bounds, r: BALL_R, vx: 0, vy: 0, isStatic: true, frictionMod: 1.0, wasOnBump: false, owner: null });
+//    balls.push({ x: FIELD_W / 2.0 - bounds, y: FIELD_H / 2.0 - bounds, r: BALL_R, vx: 0, vy: 0, isStatic: true, frictionMod: 1.0, wasOnBump: false, owner: null });
+//}
+
+// ========== CONFIGURATION ==========
+
+let isLoading = false;
+let badApplePlaying = false;
+let badAppleSamplingId = null;
+
+const COLS = 30;
+const ROWS = 20;
+const FPS = 1;
+const BRIGHTNESS_THRESHOLD = 128;
+const TOTAL_FRAMES = 219;
+
+const STEP_X = FIELD_W / COLS;
+const STEP_Y = FIELD_H / ROWS;
+
+let frameImages = [];           // ImageData for each frame
+let allBalls = [];              // pre‑created ball objects (never changes)
+let currentFrameIndex = -1;     // avoid redundant updates
+let animationStartTime = 0;
+let animationId = null;
+
+const X_MIN = FIELD_W / 2 - FIELD_W / 6;
+const X_MAX = FIELD_W / 2 + FIELD_W / 6;
+const Y_MIN = FIELD_H / 2 - FIELD_H / 6;
+const Y_MAX = FIELD_H / 2 + FIELD_H / 6;
+
+// ========== PRE‑CREATE BALLS ONLY INSIDE THE CENTRAL BOUNDS ==========
+function initAllBalls() {
+    allBalls = [];
+    for (let row = 0; row < ROWS; row++) {
+        for (let col = 0; col < COLS; col++) {
+            // Map col 0..COLS-1 to X_MIN..X_MAX
+            const t_x = col / (COLS - 1);
+            const x = X_MIN + t_x * (X_MAX - X_MIN);
+            // Map row 0..ROWS-1 to Y_MIN..Y_MAX
+            const t_y = row / (ROWS - 1);
+            const y = Y_MIN + t_y * (Y_MAX - Y_MIN);
+
+            allBalls.push({
+                x: x,
+                y: y,
+                r: BALL_R,
+                vx: 0,
+                vy: 0,
+                isStatic: true,
+                frictionMod: 1.0,
+                wasOnBump: false,
+                owner: null,
+                row: row,   // keep grid position for pixel lookup
+                col: col
+            });
+        }
+    }
+}
+
+// ========== BUILD VISIBLE BALLS FROM FRAME (using stored row/col) ==========
+function updateVisibleBallsFromFrame(frameIndex) {
+    const imageData = frameImages[frameIndex];
+    if (!imageData) return;
+
+    const data = imageData.data;
+    const newBalls = [];
+
+    for (let i = 0; i < allBalls.length; i++) {
+        const ball = allBalls[i];
+        const idx = (ball.row * COLS + ball.col) * 4;
+        const brightness = data[idx];
+        if (brightness >= BRIGHTNESS_THRESHOLD) {
+            // Reset dynamic properties
+            ball.vx = 0;
+            ball.vy = 0;
+            ball.isStatic = true;
+            ball.frictionMod = 1.0;
+            ball.wasOnBump = false;
+            ball.owner = null;
+            newBalls.push(ball);
+        }
+    }
+    balls = newBalls;
+}
+
+// ========== LOAD ALL FRAMES ==========
+function loadFrames(frameCount, callback) {
+    let loaded = 0;
+    frameImages = new Array(frameCount);
+    for (let i = 1; i <= frameCount; i++) {
+        const img = new Image();
+        img.onload = (function(idx) {
+            return function() {
+                const canvas = document.createElement('canvas');
+                canvas.width = COLS;
+                canvas.height = ROWS;
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(this, 0, 0, COLS, ROWS);
+                frameImages[idx] = ctx.getImageData(0, 0, COLS, ROWS);
+                if (++loaded === frameCount && callback) callback();
+            };
+        })(i - 1);
+        img.src = `frames/frame_${String(i)}.jpg`;
+    }
+}
+
+// ========== ANIMATION LOOP ==========
+function animate() {
+    if (!animationStartTime) return;
+
+    const now = Date.now();
+    const elapsedSec = (now - animationStartTime) / 1000;
+    const newFrameIndex = Math.floor(elapsedSec * FPS) % TOTAL_FRAMES;
+
+    if (newFrameIndex !== currentFrameIndex) {
+        currentFrameIndex = newFrameIndex;
+        updateVisibleBallsFromFrame(currentFrameIndex);
+    }
+
+    if (typeof draw === 'function') draw();
+
+    animationId = requestAnimationFrame(animate);
+}
+
+// ========== BUTTON HANDLER ==========
+document.getElementById('bad-apple').onclick = () => {
+    if (animationId) cancelAnimationFrame(animationId);
+
+    if (allBalls.length === 0) initAllBalls();
+
+    if (frameImages.length === 0) {
+        loadFrames(TOTAL_FRAMES, () => {
+            animationStartTime = Date.now();
+            animate();
+        });
+    } else {
+        animationStartTime = Date.now();
+        animate();
+    }
 };
 
 // Initially hide controls panel

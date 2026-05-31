@@ -10,33 +10,6 @@
 
 <div id="shift-flash"></div>
 
-<div id="controls-modal" class="hidden">
-    <div class="modal-content">
-        <h2>GAME CONTROLS</h2>
-        
-        <div class="control-section">
-            <h3>Keyboard</h3>
-            <p><b>Space</b> = Shoot/Pass</p>
-            <p><b>W</b> <b>A</b> <b>S</b> <b>D</b> = Move</p>
-            <p><b>Arrows</b> or <b>J</b> / <b>L</b> = Turn</p>
-        </div>
-        
-        <div class="control-section">
-            <h3>Controller</h3>
-            <p><b>Right Joystick</b> = Turn</p>
-            <p><b>Left Joystick</b> = Move</p>
-            <p><b>Right Trigger</b> = Shoot/Pass</p>
-        </div>
-        
-        <div class="control-section highlight">
-            <h3>Blitz Robot</h3>
-            <p><b>E</b> or <b>Left Trigger</b> changes the side the intake is on.</p>
-        </div>
-        
-        <button id="close-controls-btn">CLOSE</button>
-    </div>
-</div>
-
 <div class="hud" id="main-hud">
     <div class="stat" style="color: #ef4444;">RED: <span id="scoreRedDisplay">0</span></div>
     <div class="stat" style="color: #ef4444;">FUEL: <span id="heldRed">0</span></div>
@@ -60,7 +33,7 @@
         <button id="start-btn">▶ START MATCH</button>
         <button id="team-mode-toggle" class="purple-team">TEAM: SEPARATE</button>
         
-        <button id="bot-red-toggle" class="red-team">PLAYER 1: turret</button>
+        <button id="bot-red-toggle" class="red-team">PLAYER 1: 2910</button>
         <button id="p1-input-toggle" class="red-team">P1: KEYBOARD</button>
         <button id="p1-start-toggle" class="red-team">P1 START: HUB</button>
         <button id="p1-unstick" class="red-team btn-unstick disabled">P1 UNSTICK (1)</button>
@@ -68,16 +41,19 @@
         <div style="height: 5px;"></div>
         
         <button id="p2-toggle" class="purple-team">PLAYER 2: ON</button>
-        <button id="bot-blue-toggle" class="blue-team">PLAYER 2: turret</button>
+        <button id="bot-blue-toggle" class="blue-team">PLAYER 2: 2910</button>
         <button id="p2-input-toggle" class="blue-team">P2: KEYBOARD2</button>
         <button id="p2-start-toggle" class="blue-team">P2 START: HUB</button>
         <button id="p2-unstick" class="blue-team btn-unstick disabled">P2 UNSTICK (1)</button>
         
         <button id="reset-btn">RESET FIELD</button>
+        <button id="bad-apple">Bad Apple</button>
     </div>
 </div>
 
 <canvas id="field"></canvas>
+
+<video id="videoPlayer" src="bad_apple.mp4" crossorigin="anonymous" muted style="display: none;"></video>
 
 <script type="module" src="script.js"></script>
 </body>
