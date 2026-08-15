@@ -58,6 +58,11 @@ const SHIFT_STATES = {
     blue: [ { redActive: true,  blueActive: false }, { redActive: false, blueActive: true  }, { redActive: true,  blueActive: false }, { redActive: false, blueActive: true  } ]
 };
 
+// AI Planning constants
+const AI_PLAN_HORIZON = 15;
+const AI_DENSITY_RADIUS = 150;
+const AI_REPLAN_INTERVAL = 3.0;
+
 let matchRunning = false, startCountdown = 0, countdownInterval = null, matchElapsed = 0, endCooldown = 0;
 let autoPhaseEnded = false, autoWinner = 'red', autoScoreRed = 0, autoScoreBlue = 0;
 let hubRedActive = true, hubBlueActive = true, currentPhaseIdx = -1;
@@ -233,6 +238,96 @@ function tickMatch() {
     }
 }
 
+function distanceBetween(p1, p2) {
+    return Math.hypot(p1.x - p2.x, p1.y - p2.y);
+}
+
+function calculateBallScore(robot, ball, allBalls) {
+    const rcx = robot.x + robot.model.w/2;
+    const rcy = robot.y + robot.model.h/2;
+    const dist = distanceBetween({x: rcx, y: rcy}, ball);
+    if (dist < 1) return Infinity; // extremely close
+
+    // Density: count balls within AI_DENSITY_RADIUS (excluding itself)
+    let density = 0;
+    for (const other of allBalls) {
+        if (other === ball) continue;
+        if (distanceBetween(ball, other) < AI_DENSITY_RADIUS) density++;
+    }
+    // Score = inverse distance * (1 + density factor)
+    return (1 / dist) * (1 + density * 0.1);
+}
+
+function selectTopBalls(robot, allBalls, count) {
+    if (allBalls.length === 0) return [];
+    const scored = allBalls.map(b => ({ ball: b, score: calculateBallScore(robot, b, allBalls) }));
+    scored.sort((a, b) => b.score - a.score);
+    return scored.slice(0, count).map(item => item.ball);
+}
+
+function getBallsInShootingZone(alliance, allBalls) {
+    const limit = alliance === 'red' ? RED_SHOOT_LIMIT : BLUE_SHOOT_LIMIT;
+    return allBalls.filter(b => {
+        if (alliance === 'red') return b.x < limit;
+        else return b.x > limit;
+    });
+}
+
+function planRoute(robot, alliance) {
+    const allBalls = balls; // global
+    if (allBalls.length === 0) return [];
+
+    // Select top candidates
+    const topBalls = selectTopBalls(robot, allBalls, AI_PLAN_HORIZON);
+    if (topBalls.length === 0) return [];
+
+    // Build initial route: start from robot centre
+    const start = { x: robot.x + robot.model.w/2, y: robot.y + robot.model.h/2 };
+    let route = [start];
+    let remaining = [...topBalls];
+    let current = start;
+
+    while (remaining.length > 0) {
+        let minDist = Infinity, minIdx = -1;
+        for (let i = 0; i < remaining.length; i++) {
+            const d = distanceBetween(current, remaining[i]);
+            if (d < minDist) { minDist = d; minIdx = i; }
+        }
+        if (minIdx === -1) break;
+        const next = remaining[minIdx];
+        route.push(next);
+        current = next;
+        remaining.splice(minIdx, 1);
+    }
+
+    // 2‑opt improvement (keep start fixed at index 0)
+    if (route.length > 3) {
+        const dist = distanceBetween;
+        let improved = true;
+        while (improved) {
+            improved = false;
+            for (let i = 1; i < route.length - 2; i++) {
+                for (let j = i + 1; j < route.length - 1; j++) {
+                    const d1 = dist(route[i], route[i+1]) + dist(route[j], route[j+1]);
+                    const d2 = dist(route[i], route[j]) + dist(route[i+1], route[j+1]);
+                    if (d2 < d1 - 1e-9) {
+                        // reverse segment i+1 .. j
+                        const segment = route.slice(i+1, j+1);
+                        segment.reverse();
+                        route.splice(i+1, j - i, ...segment);
+                        improved = true;
+                        break;
+                    }
+                }
+                if (improved) break;
+            }
+        }
+    }
+
+    // Return only ball waypoints (exclude the start)
+    return route.slice(1);
+}
+
 /** 4. ROBOT ENGINE **/
 class Robot {
     constructor(x, y, modelKey, startingAngle) {
@@ -249,6 +344,10 @@ class Robot {
         this.aiShootTimer = 0;
         this.aiLastX = x;
         this.aiLastY = y;
+
+        this.plannedTargets = [];
+        this.targetIndex = 0;
+        this.replanTimer = 0;
     }
 
     resetAIState() {
@@ -259,6 +358,9 @@ class Robot {
         this.aiLastX = this.x;
         this.aiLastY = this.y;
         this.aiShootTimer = 0;
+        this.plannedTargets = [];
+        this.targetIndex = 0;
+        this.replanTimer = 0;
     }
 
     setModel(key) {
@@ -1012,15 +1114,17 @@ function getAIAction(robot, alliance) {
         return { moveX: 0, moveY: 0, rotInput: 0, act: false, toggleIn: false };
     }
 
+    if (robot.aiState === 'collect') {
+        robot.replanTimer += 1/60;
+    }
+
     const rcx = robot.x + robot.model.w / 2;
     const rcy = robot.y + robot.model.h / 2;
     const hubActive = alliance === 'red' ? hubRedActive : hubBlueActive;
     const hub = zones.find(z => z.type === 'hub' && z.side === alliance);
 
-    // Wider shooting zone tolerance (was 50)
-    const SHOOT_ZONE_TOLERANCE = 400;
     const shootLine = alliance === 'red' ? RED_SHOOT_LIMIT : BLUE_SHOOT_LIMIT;
-    const isShootingZone = Math.abs(rcx - shootLine) < SHOOT_ZONE_TOLERANCE;
+    const isShootingZone = alliance === 'red' ? rcx < RED_SHOOT_LIMIT : rcx > BLUE_SHOOT_LIMIT;
 
     let state = robot.aiState;
     let targetX = FIELD_W / 2, targetY = FIELD_H / 2;
@@ -1029,36 +1133,46 @@ function getAIAction(robot, alliance) {
 
     // -------- State machine --------
     if (state === 'collect') {
-        if (robot.inventory >= 0 && !hubActive){
-            state = 'pass';
-            robot.aiState = 'pass';
-            robot.aiShootTimer = 0;
-        }
-
-        if (robot.inventory >= robot.model.capacity * 0.5 && hubActive && hub) {
+        if (robot.inventory >= robot.model.capacity * 0.75 && hubActive && hub) {
             state = 'approach';
             robot.aiState = 'approach';
             robot.aiShootTimer = 0;
+        } else if (robot.inventory >= robot.model.capacity * 0.5 && !hubActive) {
+            state = 'pass';
+            robot.aiState = 'pass';
+            robot.aiShootTimer = 0;
         } else {
-            // Find nearest ball
-            let bestDist = Infinity;
-            let bestBall = null;
-            for (const b of balls) {
-                const dx = b.x - rcx;
-                const dy = b.y - rcy;
-                const d = dx * dx + dy * dy;
-                if (d < bestDist) {
-                    bestDist = d;
-                    bestBall = b;
-                }
+        const now = Date.now() / 1000; // seconds
+        const rcx = robot.x + robot.model.w/2;
+        const rcy = robot.y + robot.model.h/2;
+
+        let replan = false;
+        if (robot.plannedTargets.length === 0 || robot.targetIndex >= robot.plannedTargets.length) {
+            replan = true;
+        } else {
+            const currentTarget = robot.plannedTargets[robot.targetIndex];
+            if (distanceBetween({x: rcx, y: rcy}, currentTarget) < 30) {
+                robot.targetIndex++;
+                if (robot.targetIndex >= robot.plannedTargets.length) replan = true;
             }
-            if (bestBall) {
-                targetX = bestBall.x + (Math.random() - 0.5) * 30;
-                targetY = bestBall.y + (Math.random() - 0.5) * 30;
-            } else {
-                targetX = FIELD_W / 2;
-                targetY = FIELD_H / 2;
-            }
+        }
+        if (!replan && robot.replanTimer > AI_REPLAN_INTERVAL) replan = true;
+
+        if (replan) {
+            const newRoute = planRoute(robot, alliance);
+            robot.plannedTargets = newRoute;
+            robot.targetIndex = 0;
+            robot.replanTimer = 0;
+        }
+
+        if (robot.plannedTargets.length > 0 && robot.targetIndex < robot.plannedTargets.length) {
+            const t = robot.plannedTargets[robot.targetIndex];
+            targetX = t.x;
+            targetY = t.y;
+        } else {
+            targetX = FIELD_W / 2;
+            targetY = FIELD_H / 2;
+        }
         }
     }
 
@@ -1067,9 +1181,8 @@ function getAIAction(robot, alliance) {
             state = 'collect';
             robot.aiState = 'collect';
         } else {
-            const hubCY = hub.y + hub.h / 2;
             // Target the shooting line, aligned with hub's Y
-            targetX = alliance === 'red' ? shootLine - 30 : shootLine + 30;
+            targetX = shootLine
             targetY = robot.y
 
             // Enter shoot state when close enough
@@ -1083,7 +1196,7 @@ function getAIAction(robot, alliance) {
 
     else if (state === 'pass') {
 
-        if (!hubActive && isShootingZone) {
+        if (!hubActive || isShootingZone) {
             state = 'collect';
             robot.aiState = 'collect';
             robot.aiShootTimer = 0;
@@ -1092,6 +1205,12 @@ function getAIAction(robot, alliance) {
         if (robot.inventory === 0) {
             state = 'collect';
             robot.aiState = 'collect';
+            robot.aiShootTimer = 0;
+        }
+
+        if(hubActive && robot.inventory >= robot.model.capacity * 0.4) {
+            state = 'approach';
+            robot.aiState = 'approach';
             robot.aiShootTimer = 0;
         }
 
@@ -1122,32 +1241,97 @@ function getAIAction(robot, alliance) {
             state = 'collect';
             robot.aiState = 'collect';
             robot.aiShootTimer = 0;
+            // clear shoot planning
+            robot.shootTargets = [];
+            robot.shootTargetIdx = 0;
         }
         if (!isShootingZone) {
             state = 'approach';
             robot.aiState = 'approach';
             robot.aiShootTimer = 0;
+            robot.shootTargets = [];
+            robot.shootTargetIdx = 0;
         }
+        if (state === 'shoot') {
             act = true;
-
-            let bestDist = Infinity;
-            let bestBall = null;
-            for (const b of balls) {
-                const dx = b.x - rcx;
-                const dy = b.y - rcy;
-                const d = dx * dx + dy * dy;
-                if (d < bestDist) {
-                    bestDist = d;
-                    bestBall = b;
+            robot.shootTargets = [];
+            // --- Replan for balls inside the shooting zone ---
+            robot.shootReplanTimer += 1/60;
+            const zoneBalls = getBallsInShootingZone(alliance, balls);
+            let replan = false;
+            if (robot.shootTargets.length === 0 || robot.shootTargetIdx >= robot.shootTargets.length) {
+                replan = true;
+            } else {
+                const currentTarget = robot.shootTargets[robot.shootTargetIdx];
+                if (distanceBetween({x: rcx, y: rcy}, currentTarget) < 30) {
+                    robot.shootTargetIdx++;
+                    if (robot.shootTargetIdx >= robot.shootTargets.length) replan = true;
                 }
             }
-            if (bestBall) {
-                targetX = bestBall.x + (Math.random() - 0.5) * 30;
-                targetY = bestBall.y + (Math.random() - 0.5) * 30;
-            } else {
-                targetX = FIELD_W / 2;
-                targetY = FIELD_H / 2;
+            if (!replan && robot.shootReplanTimer > AI_REPLAN_INTERVAL) replan = true;
+
+            if (replan && zoneBalls.length > 0) {
+                // Use the same scoring as collect but limited to zoneBalls
+                const scored = zoneBalls.map(b => ({ ball: b, score: calculateBallScore(robot, b, zoneBalls) }));
+                scored.sort((a, b) => b.score - a.score);
+                const top = scored.slice(0, AI_PLAN_HORIZON).map(item => item.ball);
+                // Build route using nearest-neighbor (similar to planRoute logic)
+                let route = [];
+                let current = {x: rcx, y: rcy};
+                let remaining = [...top];
+                while (remaining.length > 0) {
+                    let minDist = Infinity, minIdx = -1;
+                    for (let i = 0; i < remaining.length; i++) {
+                        const d = distanceBetween(current, remaining[i]);
+                        if (d < minDist) { minDist = d; minIdx = i; }
+                    }
+                    if (minIdx === -1) break;
+                    const next = remaining[minIdx];
+                    route.push(next);
+                    current = next;
+                    remaining.splice(minIdx, 1);
+                }
+                // 2-opt improvement (optional, same as planRoute)
+                if (route.length > 3) {
+                    let improved = true;
+                    while (improved) {
+                        improved = false;
+                        for (let i = 0; i < route.length - 2; i++) {
+                            for (let j = i + 1; j < route.length - 1; j++) {
+                                const d1 = distanceBetween(route[i], route[i+1]) + distanceBetween(route[j], route[j+1]);
+                                const d2 = distanceBetween(route[i], route[j]) + distanceBetween(route[i+1], route[j+1]);
+                                if (d2 < d1 - 1e-9) {
+                                    const segment = route.slice(i+1, j+1);
+                                    segment.reverse();
+                                    route.splice(i+1, j - i, ...segment);
+                                    improved = true;
+                                    break;
+                                }
+                            }
+                            if (improved) break;
+                        }
+                    }
+                }
+                robot.shootTargets = route;
+                robot.shootTargetIdx = 0;
+                robot.shootReplanTimer = 0;
             }
+
+            if (robot.shootTargets.length > 0 && robot.shootTargetIdx < robot.shootTargets.length) {
+                const t = robot.shootTargets[robot.shootTargetIdx];
+                targetX = t.x;
+                targetY = t.y;
+            } else {
+                // Fallback: move toward the hub if no balls in zone
+                if (hub) {
+                    targetX = hub.x + hub.w/2;
+                    targetY = hub.y + hub.h/2;
+                } else {
+                    targetX = FIELD_W / 2;
+                    targetY = FIELD_H / 2;
+                }
+            }
+        }
     }
 
     // -------- Obstacle avoidance (tuned) --------
@@ -1155,7 +1339,7 @@ function getAIAction(robot, alliance) {
     const avoidRadius = 180;          // larger radius for smoother steering
     const repStrength = 0.8;          // reduced from 2.0
     for (const o of obstacles) {
-        if (o.type === 'trench' || o.type === 'hub') continue;
+        if (o.type === 'trench') continue;
         const cx = o.x + o.w / 2;
         const cy = o.y + o.h / 2;
         const dx = rcx - cx;
