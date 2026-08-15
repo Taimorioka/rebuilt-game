@@ -12,6 +12,7 @@ const BOT_MODELS = {
     '3636 main season': { accel: 0.36, rotSpeed: 0.036, capacity: 20, fireRate: 500, w: 41, h: 41 },
     'baguette': { accel: 0.35, rotSpeed: 0.036, capacity: 0, fireRate: 0, w: 20, h: 70 },
     'turret2': { accel: 0.38, rotSpeed: 0.036, capacity: 50, fireRate: 1, w: 41, h: 41 },
+    '3636 real': { accel: 1, rotSpeed: 0.036, capacity: 150, fireRate: 0, w: 60, h: 60 },
 };
 
 const S = 1.6;
@@ -240,6 +241,24 @@ class Robot {
         this.inventory = 0; this.lastShot = 0; this.streamCooldowns = [0, 0, 0, 0];
         this.setModel(modelKey);
         this.disruptedUntil = 0;
+
+        this.aiState = 'collect';        // 'collect' | 'approach' | 'shoot'
+        this.aiTargetX = null;
+        this.aiTargetY = null;
+        this.aiStuckTimer = 0;
+        this.aiShootTimer = 0;
+        this.aiLastX = x;
+        this.aiLastY = y;
+    }
+
+    resetAIState() {
+        this.aiState = 'collect';
+        this.aiTargetX = null;
+        this.aiTargetY = null;
+        this.aiStuckTimer = 0;
+        this.aiLastX = this.x;
+        this.aiLastY = this.y;
+        this.aiShootTimer = 0;
     }
 
     setModel(key) {
@@ -662,6 +681,12 @@ function getInputs(type, playerId) {   // playerId: 0 for P1, 1 for P2
         if (keys['ShiftRight']) act = true;
         if (keys['KeyL']) toggleIn = true;
     }
+    if (type === 'ai') {
+        const alliance = (playerId === 0) ? 'red' : (sameTeamMode ? 'red' : 'blue');
+        const robot = (playerId === 0) ? botRed : botBlue;
+        const action = getAIAction(robot, alliance);
+        return { x: action.moveX, y: action.moveY, rot: action.rotInput, act: action.act, toggleIn: action.toggleIn };
+    }
     else if (type === 'controller') {
         // Choose which gamepad index based on player
         const gpIdx = (playerId === 0) ? p1GamepadIndex : p2GamepadIndex;
@@ -982,6 +1007,224 @@ function resolveCollisionRobots(r1, r2, collision) {
     return true;
 }
 
+function getAIAction(robot, alliance) {
+    if (!matchRunning || startCountdown > 0 || endCooldown > 0) {
+        return { moveX: 0, moveY: 0, rotInput: 0, act: false, toggleIn: false };
+    }
+
+    const rcx = robot.x + robot.model.w / 2;
+    const rcy = robot.y + robot.model.h / 2;
+    const hubActive = alliance === 'red' ? hubRedActive : hubBlueActive;
+    const hub = zones.find(z => z.type === 'hub' && z.side === alliance);
+
+    // Wider shooting zone tolerance (was 50)
+    const SHOOT_ZONE_TOLERANCE = 400;
+    const shootLine = alliance === 'red' ? RED_SHOOT_LIMIT : BLUE_SHOOT_LIMIT;
+    const isShootingZone = Math.abs(rcx - shootLine) < SHOOT_ZONE_TOLERANCE;
+
+    let state = robot.aiState;
+    let targetX = FIELD_W / 2, targetY = FIELD_H / 2;
+    let act = false;
+    let overrideRot = null;
+
+    // -------- State machine --------
+    if (state === 'collect') {
+        if (robot.inventory >= 0 && !hubActive){
+            state = 'pass';
+            robot.aiState = 'pass';
+            robot.aiShootTimer = 0;
+        }
+
+        if (robot.inventory >= robot.model.capacity * 0.5 && hubActive && hub) {
+            state = 'approach';
+            robot.aiState = 'approach';
+            robot.aiShootTimer = 0;
+        } else {
+            // Find nearest ball
+            let bestDist = Infinity;
+            let bestBall = null;
+            for (const b of balls) {
+                const dx = b.x - rcx;
+                const dy = b.y - rcy;
+                const d = dx * dx + dy * dy;
+                if (d < bestDist) {
+                    bestDist = d;
+                    bestBall = b;
+                }
+            }
+            if (bestBall) {
+                targetX = bestBall.x + (Math.random() - 0.5) * 30;
+                targetY = bestBall.y + (Math.random() - 0.5) * 30;
+            } else {
+                targetX = FIELD_W / 2;
+                targetY = FIELD_H / 2;
+            }
+        }
+    }
+
+    else if (state === 'approach') {
+        if (!hub || !hubActive || robot.inventory === 0) {
+            state = 'collect';
+            robot.aiState = 'collect';
+        } else {
+            const hubCY = hub.y + hub.h / 2;
+            // Target the shooting line, aligned with hub's Y
+            targetX = alliance === 'red' ? shootLine - 30 : shootLine + 30;
+            targetY = robot.y
+
+            // Enter shoot state when close enough
+            if (isShootingZone) {
+                state = 'shoot';
+                robot.aiState = 'shoot';
+                robot.aiShootTimer = 0;
+            }
+        }
+    }
+
+    else if (state === 'pass') {
+
+        if (!hubActive && isShootingZone) {
+            state = 'collect';
+            robot.aiState = 'collect';
+            robot.aiShootTimer = 0;
+        }
+
+        if (robot.inventory === 0) {
+            state = 'collect';
+            robot.aiState = 'collect';
+            robot.aiShootTimer = 0;
+        }
+
+        act = true;
+
+        let bestDist = Infinity;
+        let bestBall = null;
+        for (const b of balls) {
+            const dx = b.x - rcx;
+            const dy = b.y - rcy;
+            const d = dx * dx + dy * dy;
+            if (d < bestDist) {
+                bestDist = d;
+                bestBall = b;
+            }
+        }
+        if (bestBall) {
+            targetX = bestBall.x + (Math.random() - 0.5) * 30;
+            targetY = bestBall.y + (Math.random() - 0.5) * 30;
+        } else {
+            targetX = FIELD_W / 2;
+            targetY = FIELD_H / 2;
+        }
+    }
+
+    else if (state === 'shoot') {
+        if (!hub || !hubActive || robot.inventory === 0) {
+            state = 'collect';
+            robot.aiState = 'collect';
+            robot.aiShootTimer = 0;
+        }
+        if (!isShootingZone) {
+            state = 'approach';
+            robot.aiState = 'approach';
+            robot.aiShootTimer = 0;
+        }
+            act = true;
+
+            let bestDist = Infinity;
+            let bestBall = null;
+            for (const b of balls) {
+                const dx = b.x - rcx;
+                const dy = b.y - rcy;
+                const d = dx * dx + dy * dy;
+                if (d < bestDist) {
+                    bestDist = d;
+                    bestBall = b;
+                }
+            }
+            if (bestBall) {
+                targetX = bestBall.x + (Math.random() - 0.5) * 30;
+                targetY = bestBall.y + (Math.random() - 0.5) * 30;
+            } else {
+                targetX = FIELD_W / 2;
+                targetY = FIELD_H / 2;
+            }
+    }
+
+    // -------- Obstacle avoidance (tuned) --------
+    let repX = 0, repY = 0;
+    const avoidRadius = 180;          // larger radius for smoother steering
+    const repStrength = 0.8;          // reduced from 2.0
+    for (const o of obstacles) {
+        if (o.type === 'trench' || o.type === 'hub') continue;
+        const cx = o.x + o.w / 2;
+        const cy = o.y + o.h / 2;
+        const dx = rcx - cx;
+        const dy = rcy - cy;
+        const dist = Math.hypot(dx, dy);
+        if (dist < avoidRadius && dist > 0) {
+            const strength = (avoidRadius - dist) / avoidRadius;
+            repX += (dx / dist) * strength * repStrength;
+            repY += (dy / dist) * strength * repStrength;
+        }
+    }
+    const wallMargin = 50;
+    if (rcx < wallMargin) repX += (wallMargin - rcx) / wallMargin * 1.5;
+    if (rcx > FIELD_W - wallMargin) repX -= (rcx - (FIELD_W - wallMargin)) / wallMargin * 1.5;
+    if (rcy < wallMargin) repY += (wallMargin - rcy) / wallMargin * 1.5;
+    if (rcy > FIELD_H - wallMargin) repY -= (rcy - (FIELD_H - wallMargin)) / wallMargin * 1.5;
+
+    // -------- Movement vector --------
+    let moveX = targetX - rcx;
+    let moveY = targetY - rcy;
+    let distTarget = Math.hypot(moveX, moveY);
+    if (distTarget > 1) {
+        moveX /= distTarget;
+        moveY /= distTarget;
+    }
+    const repMag = Math.hypot(repX, repY);
+    if (repMag > 0) {
+        const maxRep = 0.8;
+        const repScale = Math.min(maxRep, repMag * 0.4);
+        moveX += repX * repScale;
+        moveY += repY * repScale;
+        const newMag = Math.hypot(moveX, moveY);
+        if (newMag > 0) { moveX /= newMag; moveY /= newMag; }
+    }
+
+    // -------- Stuck detection (unchanged) --------
+    const posChange = Math.hypot(robot.x - robot.aiLastX, robot.y - robot.aiLastY);
+    if (posChange < 0.5) {
+        robot.aiStuckTimer += 1/60;
+    } else {
+        robot.aiStuckTimer = 0;
+    }
+    robot.aiLastX = robot.x;
+    robot.aiLastY = robot.y;
+    if (robot.aiStuckTimer > 2.0) {
+        const angle = Math.random() * 2 * Math.PI;
+        moveX += Math.cos(angle) * 0.5;
+        moveY += Math.sin(angle) * 0.5;
+        const m = Math.hypot(moveX, moveY);
+        if (m > 0) { moveX /= m; moveY /= m; }
+        robot.aiStuckTimer = 0;
+    }
+
+    // -------- Rotation --------
+    let rotInput = 0;
+    if (overrideRot !== null) {
+        rotInput = overrideRot;
+    } else {
+        const targetAngle = Math.atan2(moveY, moveX);
+        let diff = targetAngle - robot.angle;
+        while (diff < -Math.PI) diff += 2 * Math.PI;
+        while (diff > Math.PI) diff -= 2 * Math.PI;
+        const maxRotInput = 1.0;
+        rotInput = Math.max(-maxRotInput, Math.min(maxRotInput, diff * 2.5));
+    }
+
+    return { moveX, moveY, rotInput, act, toggleIn: false };
+}
+
 function update() {
     tickMatch(); updateHudBar(); const now = Date.now();
     let p1State = getInputs(p1Input, 0);
@@ -1296,6 +1539,9 @@ function resetBots() {
         botBlue.prevIntakeInput = false;
     }
 
+    botRed.resetAIState();
+    if (p2Enabled) botBlue.resetAIState();
+
     // Reset unstick logic
     p1UnstickUsed = false; p2UnstickUsed = false;
     p1FreezeUntil = 0; p2FreezeUntil = 0;
@@ -1361,13 +1607,23 @@ document.getElementById('team-mode-toggle').onclick = function() {
 
     document.getElementById('reset-btn').click();
 };
+
+const inputCycle = ['keyboard', 'keyboard2', 'controller', 'ai'];
+
 document.getElementById('p1-input-toggle').onclick = function() {
-    p1Input = p1Input === 'keyboard' ? 'keyboard2' : p1Input === 'keyboard2' ? 'controller' : 'keyboard';
-    this.innerText = "P1: " + p1Input.toUpperCase();
+    let idx = inputCycle.indexOf(p1Input);
+    idx = (idx + 1) % inputCycle.length;
+    p1Input = inputCycle[idx];
+    this.innerText = "P1: " + p1Input.toUpperCase() + (p1Input === 'ai' ? ' 🤖' : '');
+    updateGamepadStatusUI();
 };
+
 document.getElementById('p2-input-toggle').onclick = function() {
-    p2Input = p2Input === 'keyboard' ? 'keyboard2' : p2Input === 'keyboard2' ? 'controller' : 'keyboard';
-    this.innerText = "P2: " + p2Input.toUpperCase();
+    let idx = inputCycle.indexOf(p2Input);
+    idx = (idx + 1) % inputCycle.length;
+    p2Input = inputCycle[idx];
+    this.innerText = "P2: " + p2Input.toUpperCase() + (p2Input === 'ai' ? ' 🤖' : '');
+    updateGamepadStatusUI();
 };
 
 document.getElementById('p2-toggle').onclick = () => {
