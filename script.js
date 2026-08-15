@@ -1142,37 +1142,34 @@ function getAIAction(robot, alliance) {
             robot.aiState = 'pass';
             robot.aiShootTimer = 0;
         } else {
-        const now = Date.now() / 1000; // seconds
-        const rcx = robot.x + robot.model.w/2;
-        const rcy = robot.y + robot.model.h/2;
-
-        let replan = false;
-        if (robot.plannedTargets.length === 0 || robot.targetIndex >= robot.plannedTargets.length) {
-            replan = true;
-        } else {
-            const currentTarget = robot.plannedTargets[robot.targetIndex];
-            if (distanceBetween({x: rcx, y: rcy}, currentTarget) < 30) {
-                robot.targetIndex++;
-                if (robot.targetIndex >= robot.plannedTargets.length) replan = true;
+            const now = Date.now() / 1000;
+            let replan = false;
+            if (robot.plannedTargets.length === 0 || robot.targetIndex >= robot.plannedTargets.length) {
+                replan = true;
+            } else {
+                const currentTarget = robot.plannedTargets[robot.targetIndex];
+                if (distanceBetween({x: rcx, y: rcy}, currentTarget) < 30) {
+                    robot.targetIndex++;
+                    if (robot.targetIndex >= robot.plannedTargets.length) replan = true;
+                }
             }
-        }
-        if (!replan && robot.replanTimer > AI_REPLAN_INTERVAL) replan = true;
+            if (!replan && robot.replanTimer > AI_REPLAN_INTERVAL) replan = true;
 
-        if (replan) {
-            const newRoute = planRoute(robot, alliance);
-            robot.plannedTargets = newRoute;
-            robot.targetIndex = 0;
-            robot.replanTimer = 0;
-        }
+            if (replan) {
+                const newRoute = planRoute(robot, alliance);
+                robot.plannedTargets = newRoute;
+                robot.targetIndex = 0;
+                robot.replanTimer = 0;
+            }
 
-        if (robot.plannedTargets.length > 0 && robot.targetIndex < robot.plannedTargets.length) {
-            const t = robot.plannedTargets[robot.targetIndex];
-            targetX = t.x;
-            targetY = t.y;
-        } else {
-            targetX = FIELD_W / 2;
-            targetY = FIELD_H / 2;
-        }
+            if (robot.plannedTargets.length > 0 && robot.targetIndex < robot.plannedTargets.length) {
+                const t = robot.plannedTargets[robot.targetIndex];
+                targetX = t.x;
+                targetY = t.y;
+            } else {
+                targetX = FIELD_W / 2;
+                targetY = FIELD_H / 2;
+            }
         }
     }
 
@@ -1182,8 +1179,8 @@ function getAIAction(robot, alliance) {
             robot.aiState = 'collect';
         } else {
             // Target the shooting line, aligned with hub's Y
-            targetX = shootLine
-            targetY = robot.y
+            targetX = shootLine;
+            targetY = robot.y;
 
             // Enter shoot state when close enough
             if (isShootingZone) {
@@ -1195,7 +1192,6 @@ function getAIAction(robot, alliance) {
     }
 
     else if (state === 'pass') {
-
         if (!hubActive || isShootingZone) {
             state = 'collect';
             robot.aiState = 'collect';
@@ -1237,11 +1233,15 @@ function getAIAction(robot, alliance) {
     }
 
     else if (state === 'shoot') {
+
+        if (!robot.shootTargets) {
+            robot.shootTargets = [];
+        }
+
         if (!hub || !hubActive || robot.inventory === 0) {
             state = 'collect';
             robot.aiState = 'collect';
             robot.aiShootTimer = 0;
-            // clear shoot planning
             robot.shootTargets = [];
             robot.shootTargetIdx = 0;
         }
@@ -1252,83 +1252,94 @@ function getAIAction(robot, alliance) {
             robot.shootTargets = [];
             robot.shootTargetIdx = 0;
         }
-        if (state === 'shoot') {
-            act = true;
-            robot.shootTargets = [];
-            // --- Replan for balls inside the shooting zone ---
-            robot.shootReplanTimer += 1/60;
-            const zoneBalls = getBallsInShootingZone(alliance, balls);
-            let replan = false;
-            if (robot.shootTargets.length === 0 || robot.shootTargetIdx >= robot.shootTargets.length) {
-                replan = true;
-            } else {
-                const currentTarget = robot.shootTargets[robot.shootTargetIdx];
-                if (distanceBetween({x: rcx, y: rcy}, currentTarget) < 30) {
-                    robot.shootTargetIdx++;
-                    if (robot.shootTargetIdx >= robot.shootTargets.length) replan = true;
-                }
-            }
-            if (!replan && robot.shootReplanTimer > AI_REPLAN_INTERVAL) replan = true;
 
-            if (replan && zoneBalls.length > 0) {
-                // Use the same scoring as collect but limited to zoneBalls
-                const scored = zoneBalls.map(b => ({ ball: b, score: calculateBallScore(robot, b, zoneBalls) }));
-                scored.sort((a, b) => b.score - a.score);
-                const top = scored.slice(0, AI_PLAN_HORIZON).map(item => item.ball);
-                // Build route using nearest-neighbor (similar to planRoute logic)
-                let route = [];
-                let current = {x: rcx, y: rcy};
-                let remaining = [...top];
-                while (remaining.length > 0) {
-                    let minDist = Infinity, minIdx = -1;
-                    for (let i = 0; i < remaining.length; i++) {
-                        const d = distanceBetween(current, remaining[i]);
-                        if (d < minDist) { minDist = d; minIdx = i; }
+        // --- NEW: if no balls in the shooting zone, go collect elsewhere ---
+        if (state === 'shoot' && isShootingZone) {
+            const zoneBalls = getBallsInShootingZone(alliance, balls);
+            if (zoneBalls.length === 0) {
+                // No balls on this side → switch to collect mode
+                state = 'collect';
+                robot.aiState = 'collect';
+                robot.aiShootTimer = 0;
+                robot.shootTargets = [];
+                robot.shootTargetIdx = 0;
+                // Set a temporary target to trigger a replan in collect state
+                targetX = FIELD_W / 2;
+                targetY = FIELD_H / 2;
+            } else {
+                // Normal shoot behaviour: plan route inside the shooting zone
+                act = true;
+                robot.shootReplanTimer += 1/60;
+
+                let replan = false;
+                if (robot.shootTargets.length === 0 || robot.shootTargetIdx >= robot.shootTargets.length) {
+                    replan = true;
+                } else {
+                    const currentTarget = robot.shootTargets[robot.shootTargetIdx];
+                    if (distanceBetween({x: rcx, y: rcy}, currentTarget) < 30) {
+                        robot.shootTargetIdx++;
+                        if (robot.shootTargetIdx >= robot.shootTargets.length) replan = true;
                     }
-                    if (minIdx === -1) break;
-                    const next = remaining[minIdx];
-                    route.push(next);
-                    current = next;
-                    remaining.splice(minIdx, 1);
                 }
-                // 2-opt improvement (optional, same as planRoute)
-                if (route.length > 3) {
-                    let improved = true;
-                    while (improved) {
-                        improved = false;
-                        for (let i = 0; i < route.length - 2; i++) {
-                            for (let j = i + 1; j < route.length - 1; j++) {
-                                const d1 = distanceBetween(route[i], route[i+1]) + distanceBetween(route[j], route[j+1]);
-                                const d2 = distanceBetween(route[i], route[j]) + distanceBetween(route[i+1], route[j+1]);
-                                if (d2 < d1 - 1e-9) {
-                                    const segment = route.slice(i+1, j+1);
-                                    segment.reverse();
-                                    route.splice(i+1, j - i, ...segment);
-                                    improved = true;
-                                    break;
+                if (!replan && robot.shootReplanTimer > AI_REPLAN_INTERVAL) replan = true;
+
+                if (replan && zoneBalls.length > 0) {
+                    const scored = zoneBalls.map(b => ({ ball: b, score: calculateBallScore(robot, b, zoneBalls) }));
+                    scored.sort((a, b) => b.score - a.score);
+                    const top = scored.slice(0, AI_PLAN_HORIZON).map(item => item.ball);
+                    let route = [];
+                    let current = {x: rcx, y: rcy};
+                    let remaining = [...top];
+                    while (remaining.length > 0) {
+                        let minDist = Infinity, minIdx = -1;
+                        for (let i = 0; i < remaining.length; i++) {
+                            const d = distanceBetween(current, remaining[i]);
+                            if (d < minDist) { minDist = d; minIdx = i; }
+                        }
+                        if (minIdx === -1) break;
+                        const next = remaining[minIdx];
+                        route.push(next);
+                        current = next;
+                        remaining.splice(minIdx, 1);
+                    }
+                    if (route.length > 3) {
+                        let improved = true;
+                        while (improved) {
+                            improved = false;
+                            for (let i = 0; i < route.length - 2; i++) {
+                                for (let j = i + 1; j < route.length - 1; j++) {
+                                    const d1 = distanceBetween(route[i], route[i+1]) + distanceBetween(route[j], route[j+1]);
+                                    const d2 = distanceBetween(route[i], route[j]) + distanceBetween(route[i+1], route[j+1]);
+                                    if (d2 < d1 - 1e-9) {
+                                        const segment = route.slice(i+1, j+1);
+                                        segment.reverse();
+                                        route.splice(i+1, j - i, ...segment);
+                                        improved = true;
+                                        break;
+                                    }
                                 }
+                                if (improved) break;
                             }
-                            if (improved) break;
                         }
                     }
+                    robot.shootTargets = route;
+                    robot.shootTargetIdx = 0;
+                    robot.shootReplanTimer = 0;
                 }
-                robot.shootTargets = route;
-                robot.shootTargetIdx = 0;
-                robot.shootReplanTimer = 0;
-            }
 
-            if (robot.shootTargets.length > 0 && robot.shootTargetIdx < robot.shootTargets.length) {
-                const t = robot.shootTargets[robot.shootTargetIdx];
-                targetX = t.x;
-                targetY = t.y;
-            } else {
-                // Fallback: move toward the hub if no balls in zone
-                if (hub) {
-                    targetX = hub.x + hub.w/2;
-                    targetY = hub.y + hub.h/2;
+                if (robot.shootTargets.length > 0 && robot.shootTargetIdx < robot.shootTargets.length) {
+                    const t = robot.shootTargets[robot.shootTargetIdx];
+                    targetX = t.x;
+                    targetY = t.y;
                 } else {
-                    targetX = FIELD_W / 2;
-                    targetY = FIELD_H / 2;
+                    // Fallback: move toward the hub if no balls in zone (shouldn't happen due to the check above)
+                    if (hub) {
+                        targetX = hub.x + hub.w/2;
+                        targetY = hub.y + hub.h/2;
+                    } else {
+                        targetX = FIELD_W / 2;
+                        targetY = FIELD_H / 2;
+                    }
                 }
             }
         }
@@ -1336,8 +1347,8 @@ function getAIAction(robot, alliance) {
 
     // -------- Obstacle avoidance (tuned) --------
     let repX = 0, repY = 0;
-    const avoidRadius = 180;          // larger radius for smoother steering
-    const repStrength = 0.8;          // reduced from 2.0
+    const avoidRadius = 180;
+    const repStrength = 0.8;
     for (const o of obstacles) {
         if (o.type === 'trench') continue;
         const cx = o.x + o.w / 2;
@@ -1375,7 +1386,7 @@ function getAIAction(robot, alliance) {
         if (newMag > 0) { moveX /= newMag; moveY /= newMag; }
     }
 
-    // -------- Stuck detection (unchanged) --------
+    // -------- Stuck detection --------
     const posChange = Math.hypot(robot.x - robot.aiLastX, robot.y - robot.aiLastY);
     if (posChange < 0.5) {
         robot.aiStuckTimer += 1/60;
