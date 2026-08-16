@@ -1134,12 +1134,12 @@ function getAIAction(robot, alliance) {
     // -------- State machine --------
     if (state === 'collect') {
         if (robot.inventory >= robot.model.capacity * 0.75 && hubActive && hub) {
-            state = 'approach';
-            robot.aiState = 'approach';
+            state = 'approach hub';
+            robot.aiState = 'approach hub';
             robot.aiShootTimer = 0;
         } else if (robot.inventory >= robot.model.capacity * 0.5 && !hubActive) {
-            state = 'pass';
-            robot.aiState = 'pass';
+            state = 'approach mid';
+            robot.aiState = 'approach mid';
             robot.aiShootTimer = 0;
         } else {
             const now = Date.now() / 1000;
@@ -1173,41 +1173,48 @@ function getAIAction(robot, alliance) {
         }
     }
 
-    else if (state === 'approach') {
-        if (!hub || !hubActive || robot.inventory === 0) {
-            state = 'collect';
-            robot.aiState = 'collect';
-        } else {
-            // Target the shooting line, aligned with hub's Y
-            targetX = shootLine;
-            targetY = robot.y;
-
-            // Enter shoot state when close enough
-            if (isShootingZone) {
-                state = 'shoot';
-                robot.aiState = 'shoot';
-                robot.aiShootTimer = 0;
-            }
+    else if (state === 'approach hub') {
+        if (!hubActive) {
+            state = 'approach mid';
+            robot.aiState = 'approach mid';
         }
+        if (isShootingZone) {
+            state = 'shoot';
+            robot.aiState = 'shoot';
+            robot.aiShootTimer = 0;
+        }
+        targetX = shootLine;
+        targetY = robot.y;
+    }
+
+    else if (state === 'approach mid') {
+        if (hubActive) {
+            state = 'approach hub';
+            robot.aiState = 'approach hub';
+        }
+        if (!isShootingZone) {
+            state = 'pass';
+            robot.aiState = 'pass';
+            robot.aiShootTimer = 0;
+        }
+        targetX = FIELD_W / 2;
+        targetY = robot.y;
     }
 
     else if (state === 'pass') {
-        if (!hubActive || isShootingZone) {
+
+        if (robot.inventory === 0 || hubActive) {
             state = 'collect';
             robot.aiState = 'collect';
             robot.aiShootTimer = 0;
         }
 
-        if (robot.inventory === 0) {
-            state = 'collect';
-            robot.aiState = 'collect';
-            robot.aiShootTimer = 0;
-        }
-
-        if(hubActive && robot.inventory >= robot.model.capacity * 0.4) {
+        if (!isShootingZone) {
             state = 'approach';
             robot.aiState = 'approach';
             robot.aiShootTimer = 0;
+            robot.shootTargets = [];
+            robot.shootTargetIdx = 0;
         }
 
         act = true;
@@ -1238,13 +1245,14 @@ function getAIAction(robot, alliance) {
             robot.shootTargets = [];
         }
 
-        if (!hub || !hubActive || robot.inventory === 0) {
+        if (robot.inventory === 0 || hubActive) {
             state = 'collect';
             robot.aiState = 'collect';
             robot.aiShootTimer = 0;
             robot.shootTargets = [];
             robot.shootTargetIdx = 0;
         }
+
         if (!isShootingZone) {
             state = 'approach';
             robot.aiState = 'approach';
@@ -1345,10 +1353,10 @@ function getAIAction(robot, alliance) {
         }
     }
 
-    // -------- Obstacle avoidance (tuned) --------
+    // -------- Obstacle avoidance --------
     let repX = 0, repY = 0;
-    const avoidRadius = 180;
-    const repStrength = 0.8;
+    const avoidRadius = 250;
+    const repStrength = 0.9;
     for (const o of obstacles) {
         if (o.type === 'trench') continue;
         const cx = o.x + o.w / 2;
@@ -1395,7 +1403,7 @@ function getAIAction(robot, alliance) {
     }
     robot.aiLastX = robot.x;
     robot.aiLastY = robot.y;
-    if (robot.aiStuckTimer > 2.0) {
+    if (robot.aiStuckTimer > 0.5) {
         const angle = Math.random() * 2 * Math.PI;
         moveX += Math.cos(angle) * 0.5;
         moveY += Math.sin(angle) * 0.5;
