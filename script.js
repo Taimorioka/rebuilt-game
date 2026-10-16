@@ -78,16 +78,11 @@ let matchRunning = false, startCountdown = 0, countdownInterval = null, matchEla
 let autoPhaseEnded = false, autoWinner = 'red', autoScoreRed = 0, autoScoreBlue = 0;
 let hubRedActive = true, hubBlueActive = true, currentPhaseIdx = -1;
 
+const NUM_PLAYERS = 6;
+const TEAM_SIZE = 3;               // players 1-3 = RED, 4-6 = BLUE
+
 let sameTeamMode = false;
-let p2Enabled = true;
-let p1Input = 'keyboard';
-let p2Input = 'keyboard2';
-let p1StartIdx = 0, p2StartIdx = 0;
-let p1UnstickUsed = false, p2UnstickUsed = false;
-let p1FreezeUntil = 0, p2FreezeUntil = 0;
-let gamepads = [null, null];
-let p1GamepadIndex = 0;
-let p2GamepadIndex = 1;
+let gamepads = new Array(NUM_PLAYERS).fill(null);
 let gamepadStatusDiv = null;
 const START_LABELS = ['HUB', 'TOP TRENCH', 'BOT TRENCH'];
 
@@ -113,34 +108,7 @@ function updateGamepadStatusUI() {
         } else return;
     }
     const connected = gamepads.map((gp, i) => gp ? `🎮 ${i}` : `❌ ${i}`).join(' ');
-    gamepadStatusDiv.innerHTML = `Gamepads: ${connected}<br>P1 uses index ${p1GamepadIndex} | P2 uses index ${p2GamepadIndex}`;
-}
-
-function addGamepadAssignButtons() {
-    const panel = document.getElementById('control-panel');
-    if (!panel || document.getElementById('p1-gamepad-assign')) return;
-    const p1Btn = document.createElement('button');
-    p1Btn.id = 'p1-gamepad-assign';
-    p1Btn.className = 'red-team';
-    p1Btn.innerHTML = `P1 Gamepad: ${p1GamepadIndex}`;
-    p1Btn.onclick = () => {
-        p1GamepadIndex = (p1GamepadIndex + 1) % 4;
-        p1Btn.innerHTML = `P1 Gamepad: ${p1GamepadIndex}`;
-        updateGamepadStatusUI();
-    };
-    const p2Btn = document.createElement('button');
-    p2Btn.id = 'p2-gamepad-assign';
-    p2Btn.className = 'blue-team';
-    p2Btn.innerHTML = `P2 Gamepad: ${p2GamepadIndex}`;
-    p2Btn.onclick = () => {
-        p2GamepadIndex = (p2GamepadIndex + 1) % 4;
-        p2Btn.innerHTML = `P2 Gamepad: ${p2GamepadIndex}`;
-        updateGamepadStatusUI();
-    };
-    const p1InputBtn = document.getElementById('p1-input-toggle');
-    if (p1InputBtn) p1InputBtn.parentNode.insertBefore(p1Btn, p1InputBtn.nextSibling);
-    const p2InputBtn = document.getElementById('p2-input-toggle');
-    if (p2InputBtn) p2InputBtn.parentNode.insertBefore(p2Btn, p2InputBtn.nextSibling);
+    gamepadStatusDiv.innerHTML = `Gamepads: ${connected}`;
 }
 
 function formatTime(s) {
@@ -197,8 +165,7 @@ function tickMatch() {
         document.getElementById('phase-timer').innerText = "";
         document.getElementById('start-btn').innerText = "▶ START MATCH";
         document.getElementById('start-btn').classList.remove('running');
-        document.getElementById('p1-unstick').classList.add('disabled');
-        document.getElementById('p2-unstick').classList.add('disabled');
+        refreshPlayerButtons();
         updateHubUI(false, false); return;
     }
 
@@ -381,6 +348,9 @@ class Robot {
         this.plannedTargets = [];
         this.targetIndex = 0;
         this.replanTimer = 0;
+        this.shootTargets = [];
+        this.shootTargetIdx = 0;
+        this.shootReplanTimer = 0;
     }
 
     resetAIState() {
@@ -394,6 +364,9 @@ class Robot {
         this.plannedTargets = [];
         this.targetIndex = 0;
         this.replanTimer = 0;
+        this.shootTargets = [];
+        this.shootTargetIdx = 0;
+        this.shootReplanTimer = 0;
         this.navPath = null;
         this.navIndex = 0;
         this.navTimer = 0;
@@ -410,7 +383,7 @@ class Robot {
         this.prevIntakeInput = false;
     }
 
-    update(moveX, moveY, rotInput, rawActInput, rawToggleInput, alliance, obstacles, zones, otherBot = null) {
+    update(moveX, moveY, rotInput, rawActInput, rawToggleInput, alliance, obstacles, zones, otherBots = []) {
         if (isNaN(this.x) || isNaN(this.y) || isNaN(this.vx) || isNaN(this.vy)) {
             this.x = alliance === 'red' ? 80 : FIELD_W - 115;
             this.y = FIELD_H/2 - 14; this.vx = 0; this.vy = 0; this.vAngle = 0;
@@ -444,10 +417,6 @@ class Robot {
         const rcx = this.x + this.model.w/2, rcy = this.y + this.model.h/2;
         const isShootingZone = alliance === 'red' ? rcx < RED_SHOOT_LIMIT : rcx > BLUE_SHOOT_LIMIT;
 
-        let heldSpan = document.getElementById(alliance === 'red' ? 'heldRed' : 'heldBlue');
-        if (this.inventory >= this.model.capacity * 0.75) heldSpan.classList.add('warning');
-        else heldSpan.classList.remove('warning');
-
         if (moveX !== 0 || moveY !== 0) {
             const mag = Math.sqrt(moveX*moveX + moveY*moveY);
             if (mag > 0.8) { moveX /= mag; moveY /= mag; }
@@ -461,10 +430,11 @@ class Robot {
         let isLockedOn = true;
 
         const collidingWithOther = () => {
-            if (!otherBot) return false;
             const myOBB = getOBB(this);
-            const otherOBB = getOBB(otherBot);
-            return collideOBB_OBB(myOBB, otherOBB).colliding;
+            for (const other of otherBots) {
+                if (collideOBB_OBB(myOBB, getOBB(other)).colliding) return true;
+            }
+            return false;
         };
 
         const now = Date.now();
@@ -640,7 +610,7 @@ class Robot {
         });
 
         this.inventory--;
-        document.getElementById(alliance === 'red' ? 'heldRed' : 'heldBlue').innerText = this.inventory;
+        updateHeldDisplay();
     }
 
     fireStandard(isShooting, alliance, rcx, rcy, now) {
@@ -741,8 +711,36 @@ function resolveBallCollision(b1, b2) {
     }
 }
 
-let botRed = new Robot(80, FIELD_H/2 - 14, '2910', 0);
-let botBlue = new Robot(FIELD_W - 115, FIELD_H/2 - 14, '2910', Math.PI);
+class Player {
+    constructor(index) {
+        this.index = index;
+        this.enabled = index < 2;                                   // P1 & P2 on by default
+        this.input = index === 0 ? 'keyboard' : (index === 1 ? 'keyboard2' : 'ai');
+        this.startIdx = index % TEAM_SIZE;
+        this.gamepadIndex = index;
+        this.unstickUsed = false;
+        this.freezeUntil = 0;
+        this._input = { x: 0, y: 0, rot: 0, act: false, toggleIn: false };
+        this.robot = new Robot(0, 0, '2910', index < TEAM_SIZE ? 0 : Math.PI);
+    }
+    get team() { return sameTeamMode ? 'red' : (this.index < TEAM_SIZE ? 'red' : 'blue'); }
+}
+
+const players = [];
+for (let i = 0; i < NUM_PLAYERS; i++) players.push(new Player(i));
+
+function activePlayers() { return players.filter(p => p.enabled); }
+function activeRobots()  { return activePlayers().map(p => p.robot); }
+
+function updateHeldDisplay() {
+    let red = 0, blue = 0;
+    for (const p of activePlayers()) {
+        if (p.team === 'red') red += p.robot.inventory; else blue += p.robot.inventory;
+    }
+    document.getElementById('heldRed').innerText = red;
+    document.getElementById('heldBlue').innerText = blue;
+}
+
 let balls = [], projectiles = [], scoringBalls = [], obstacles = [], zones = [];
 let scoreRed = 0, scoreBlue = 0; const keys = {};
 
@@ -824,15 +822,12 @@ function getInputs(type, playerId) {   // playerId: 0 for P1, 1 for P2
         if (keys['KeyL']) toggleIn = true;
     }
     if (type === 'ai') {
-        const alliance = (playerId === 0) ? 'red' : (sameTeamMode ? 'red' : 'blue');
-        const robot = (playerId === 0) ? botRed : botBlue;
-        const action = getAIAction(robot, alliance);
-        return { x: action.moveX, y: action.moveY, rot: action.rotInput, act: action.act, toggleIn: action.toggleIn };
+            const p = players[playerId];
+            const action = getAIAction(p.robot, p.team);
+            return { x: action.moveX, y: action.moveY, rot: action.rotInput, act: action.act, toggleIn: action.toggleIn };
     }
     else if (type === 'controller') {
-        // Choose which gamepad index based on player
-        const gpIdx = (playerId === 0) ? p1GamepadIndex : p2GamepadIndex;
-        const gp = navigator.getGamepads ? navigator.getGamepads()[gpIdx] : null;
+        const gp = navigator.getGamepads ? navigator.getGamepads()[players[playerId].gamepadIndex] : null;
         if (!gp) return {x, y, rot, act, toggleIn};
 
         if (gp.axes.length > 1) {
@@ -882,7 +877,6 @@ setInterval(() => {
     updateGamepadStatusUI();
 }, 500);
 window.addEventListener('DOMContentLoaded', () => {
-    addGamepadAssignButtons();
     const gps = navigator.getGamepads();
     for (let i = 0; i < gps.length; i++) if (gps[i]) gamepads[i] = gps[i];
     updateGamepadStatusUI();
@@ -1150,20 +1144,6 @@ function resolveCollisionRobots(r1, r2, collision) {
 }
 
 function getAIAction(robot, alliance) {
-
-    /* ============================================================
-       NAVIGATION / PATHFINDING  (A* on an inflated occupancy grid)
-       ============================================================ */
-    const NAV_CELL = 16;                 // grid resolution (world units per cell)
-    const NAV_DIRS = [
-        [ 1,  0, 1        ], [ -1,  0, 1        ],
-        [ 0,  1, 1        ], [  0, -1, 1        ],
-        [ 1,  1, Math.SQRT2], [ 1, -1, Math.SQRT2],
-        [-1,  1, Math.SQRT2], [-1, -1, Math.SQRT2]
-    ];
-
-    let navCols = 0, navRows = 0, navBlocked = null, navKey = '';
-    const navCache = new Map();          // key -> { blocked, cols, rows }
 
     /** Radius used to inflate every obstacle so paths keep the bot clear. */
     function getNavRadius(robot) {
@@ -1664,11 +1644,11 @@ function getAIAction(robot, alliance) {
         }
     }
 
-    // Always push away from the opposing robot so they don't lock together.
-    const otherBotRef = robot === botRed ? botBlue : botRed;
-    if (p2Enabled && otherBotRef && otherBotRef.x > -500) {
-        const dx = rcx - (otherBotRef.x + otherBotRef.model.w / 2);
-        const dy = rcy - (otherBotRef.y + otherBotRef.model.h / 2);
+    // Always push away from the other active robots so they don't lock together.
+    for (const other of activeRobots()) {
+        if (other === robot) continue;
+        const dx = rcx - (other.x + other.model.w / 2);
+        const dy = rcy - (other.y + other.model.h / 2);
         const dist = Math.hypot(dx, dy);
         if (dist < 70 && dist > 0.001) {
             const strength = (70 - dist) / 70;
@@ -1730,28 +1710,35 @@ function getAIAction(robot, alliance) {
 
 function update() {
     tickMatch(); updateHudBar(); const now = Date.now();
-    let p1State = getInputs(p1Input, 0);
-    let p2State = getInputs(p2Input, 1);
+    const actives = activePlayers();
 
-    // Apply the unstick freeze penalty
-    if (now < p1FreezeUntil) { p1State = {x: 0, y: 0, rot: 0, act: false, toggleIn: false}; }
-    if (now < p2FreezeUntil) { p2State = {x: 0, y: 0, rot: 0, act: false, toggleIn: false}; }
+    // 1. Gather inputs
+    for (const p of actives) {
+        let st = getInputs(p.input, p.index);
+        if (now < p.freezeUntil) st = { x: 0, y: 0, rot: 0, act: false, toggleIn: false };
+        p._input = st;
+    }
 
-    botRed.update(p1State.x, p1State.y, p1State.rot, p1State.act, p1State.toggleIn, 'red', obstacles, zones, botBlue);
-    if (p2Enabled) botBlue.update(p2State.x, p2State.y, p2State.rot, p2State.act, p2State.toggleIn, sameTeamMode ? 'red' : 'blue', obstacles, zones, botRed);
+    // 2. Update every active robot
+    for (const p of actives) {
+        const others = [];
+        for (const q of actives) if (q !== p) others.push(q.robot);
+        const s = p._input;
+        p.robot.update(s.x, s.y, s.rot, s.act, s.toggleIn, p.team, obstacles, zones, others);
+    }
 
-    if (p2Enabled) {
-        const obbRed = getOBB(botRed);
-        const obbBlue = getOBB(botBlue);
-        const collision = collideOBB_OBB(obbRed, obbBlue);
-        if (collision.colliding) {
-            resolveCollisionRobots(botRed, botBlue, collision);
-            // Clamp to field bounds
-            botRed.x = Math.max(0, Math.min(FIELD_W - botRed.model.w, botRed.x));
-            botRed.y = Math.max(0, Math.min(FIELD_H - botRed.model.h, botRed.y));
-            botBlue.x = Math.max(0, Math.min(FIELD_W - botBlue.model.w, botBlue.x));
-            botBlue.y = Math.max(0, Math.min(FIELD_H - botBlue.model.h, botBlue.y));
+    // 3. Robot-vs-robot collisions (all pairs)
+    for (let i = 0; i < actives.length; i++) {
+        for (let j = i + 1; j < actives.length; j++) {
+            const r1 = actives[i].robot, r2 = actives[j].robot;
+            const col = collideOBB_OBB(getOBB(r1), getOBB(r2));
+            if (col.colliding) resolveCollisionRobots(r1, r2, col);
         }
+    }
+    for (const p of actives) {
+        const r = p.robot;
+        r.x = Math.max(0, Math.min(FIELD_W - r.model.w, r.x));
+        r.y = Math.max(0, Math.min(FIELD_H - r.model.h, r.y));
     }
 
     scoringBalls = scoringBalls.filter(sb => {
@@ -1768,7 +1755,7 @@ function update() {
                 rollTimer: now + 1500,
                 wasOnBump: false,
                 owner: sb.side,
-                noCollideUntil: now + 300    // <-- new: ignore collisions for 200ms
+                noCollideUntil: now + 300
             });
             return false;
         }
@@ -1777,7 +1764,6 @@ function update() {
 
     for (let i = 0; i < balls.length; i++) {
         for (let j = i + 1; j < balls.length; j++) {
-            // Skip collision for newly ejected balls
             if (balls[i].noCollideUntil && now < balls[i].noCollideUntil) continue;
             if (balls[j].noCollideUntil && now < balls[j].noCollideUntil) continue;
             resolveBallCollision(balls[i], balls[j]);
@@ -1789,43 +1775,26 @@ function update() {
         if (!onB && b.wasOnBump) { b.vx *= 0.15; b.vy *= 0.15; } b.wasOnBump = onB;
         if (!b.isStatic) { b.x += b.vx; b.y += b.vy; let f = (b.rollTimer && now < b.rollTimer) ? b.frictionMod : (onB?0.96:0.91); b.vx *= f; b.vy *= f; if (Math.hypot(b.vx, b.vy) < 0.15) { b.vx=0; b.vy=0; b.isStatic=true; } }
 
-        if (b.x < b.r) {
-            b.x = b.r + 0.1; // slight push out
-            b.vx = Math.max(Math.abs(b.vx) * 0.5, 1.0); // minimum bounce away
-            b.isStatic = false;
-        }
-        if (b.x > FIELD_W - b.r) {
-            b.x = FIELD_W - b.r - 0.1;
-            b.vx = -Math.max(Math.abs(b.vx) * 0.5, 1.0);
-            b.isStatic = false;
-        }
-        if (b.y < b.r) {
-            b.y = b.r + 0.1;
-            b.vy = Math.max(Math.abs(b.vy) * 0.5, 1.0);
-            b.isStatic = false;
-        }
-        if (b.y > FIELD_H - b.r) {
-            b.y = FIELD_H - b.r - 0.1;
-            b.vy = -Math.max(Math.abs(b.vy) * 0.5, 1.0);
-            b.isStatic = false;
-        }
+        if (b.x < b.r) { b.x = b.r + 0.1; b.vx = Math.max(Math.abs(b.vx) * 0.5, 1.0); b.isStatic = false; }
+        if (b.x > FIELD_W - b.r) { b.x = FIELD_W - b.r - 0.1; b.vx = -Math.max(Math.abs(b.vx) * 0.5, 1.0); b.isStatic = false; }
+        if (b.y < b.r) { b.y = b.r + 0.1; b.vy = Math.max(Math.abs(b.vy) * 0.5, 1.0); b.isStatic = false; }
+        if (b.y > FIELD_H - b.r) { b.y = FIELD_H - b.r - 0.1; b.vy = -Math.max(Math.abs(b.vy) * 0.5, 1.0); b.isStatic = false; }
 
         obstacles.forEach(o => {
             if (o.type !== 'trench') {
                 let col = circleRectCollision(b, o);
                 if (col.hit) {
                     b.isStatic = false;
-                    b.vx *= 0.8;
-                    b.vy *= 0.8;
+                    b.vx *= 0.8; b.vy *= 0.8;
                     b.x += col.nx * col.overlap;
                     b.y += col.ny * col.overlap;
                 }
             }
         });
 
-        let activeBots = p2Enabled ? [botRed, botBlue] : [botRed];
-        for(let bot of activeBots) {
-            let alliance = bot === botRed ? 'red' : (sameTeamMode ? 'red' : 'blue');
+        for (const p of actives) {
+            const bot = p.robot;
+            const alliance = p.team;
             let ix, iy;
 
             if (bot.name === 'Blitz') {
@@ -1837,19 +1806,19 @@ function update() {
                 iy = (bot.y+bot.model.h/2) + Math.sin(bot.angle)*(bot.model.w/2+10);
             }
 
-            if (Math.hypot(b.x-ix, b.y-iy)<9 && bot.inventory<bot.model.capacity) { bot.inventory++; document.getElementById(alliance==='red'?'heldRed':'heldBlue').innerText = bot.inventory; return false; }
+            if (Math.hypot(b.x-ix, b.y-iy)<9 && bot.inventory<bot.model.capacity) {
+                bot.inventory++;
+                return false;
+            }
 
             const obb = getOBB(bot);
             let rCol = circleOBBCollision(b, obb);
             if (rCol.hit) {
                 b.isStatic = false;
                 b.owner = alliance;
-
-                // Position correction
                 b.x += rCol.nx * rCol.overlap;
                 b.y += rCol.ny * rCol.overlap;
 
-                // Relative velocity between ball and robot's center of mass
                 const robotCenter = { x: bot.x + bot.model.w/2, y: bot.y + bot.model.h/2 };
                 const ballToCenter = { x: robotCenter.x - b.x, y: robotCenter.y - b.y };
                 const robotVelAtContact = {
@@ -1861,7 +1830,7 @@ function update() {
                 const velAlong = relVelX * rCol.nx + relVelY * rCol.ny;
                 if (velAlong < 0) {
                     const e = 0.5;
-                    const mBall = 1, mRobot = 3; // robot is heavier
+                    const mBall = 1, mRobot = 3;
                     const impulse = -(1 + e) * velAlong / (1/mBall + 1/mRobot);
                     b.vx += (impulse / mBall) * rCol.nx;
                     b.vy += (impulse / mBall) * rCol.ny;
@@ -1870,10 +1839,7 @@ function update() {
         }
 
         let speed = Math.hypot(b.vx, b.vy);
-        if (speed > 25) {
-            b.vx = (b.vx / speed) * 25;
-            b.vy = (b.vy / speed) * 25;
-        }
+        if (speed > 25) { b.vx = (b.vx / speed) * 25; b.vy = (b.vy / speed) * 25; }
         return true;
     });
 
@@ -1883,7 +1849,6 @@ function update() {
         obstacles.forEach(o => { if (o.type==='hub' && !p.isPass && o.side!==p.owner) { let col = circleRectCollision(p, o); if(col.hit){p.vx*=-0.2;p.vy*=-0.2;} } });
         let scored = false;
         zones.forEach(z => {
-            // Intake radius aligned perfectly with the circumradius of the visual hexagon (HUB_S/2)
             if (z.type === 'hub' && z.side === p.owner && !p.isPass && Math.hypot(p.x-(z.x+z.w/2), p.y-(z.y+z.h/2)) < HUB_S/2) {
                 scoringBalls.push({ exitTime: now + 300, hubX: z.x, hubY: z.y, side: z.side }); scored = true;
                 let isHubActive = p.owner === 'red' ? hubRedActive : hubBlueActive;
@@ -1896,6 +1861,8 @@ function update() {
         if (p.isPass && Math.hypot(p.vx, p.vy) < 0.95) { balls.push({ x: p.x, y: p.y, r: BALL_R, vx: p.vx*0.35, vy: p.vy*0.35, isStatic: false, wasOnBump: false, owner: p.owner }); return false; }
         return !scored;
     });
+
+    updateHeldDisplay();
 }
 
 function draw() {
@@ -1949,43 +1916,48 @@ function draw() {
         } else { ctx.fillStyle = `rgba(${c}, 0.2)`; ctx.fillRect(z.x, z.y, z.w, z.h); }
     });
 
-    // Pulse effect if frozen
-    if (Date.now() < p1FreezeUntil && matchRunning) {
-        ctx.globalAlpha = 0.5 + Math.sin(Date.now() / 100) * 0.3;
-    }
-    botRed.draw(ctx, 'red');
-    ctx.globalAlpha = 1.0;
+    ctx.fillStyle = "#fbbf24"; balls.forEach(b => { ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, Math.PI*2); ctx.fill(); });
+    projectiles.forEach(p => { ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI*2); ctx.fill(); });
 
-    if (p2Enabled) {
-        if (Date.now() < p2FreezeUntil && matchRunning) {
-            ctx.globalAlpha = 0.5 + Math.sin(Date.now() / 100) * 0.3;
-        }
-        botBlue.draw(ctx, sameTeamMode ? 'red' : 'blue');
-        ctx.globalAlpha = 1.0;
+    // --- Draw every active robot ---
+    for (const p of activePlayers()) {
+       const frozen = matchRunning && Date.now() < p.freezeUntil;
+       ctx.globalAlpha = frozen ? 0.5 + Math.sin(Date.now() / 100) * 0.3 : 1.0;
+       p.robot.draw(ctx, p.team);
+       ctx.globalAlpha = 1.0;
+
+       // Player-number tag
+       ctx.save();
+       ctx.font = 'bold 12px "Segoe UI", system-ui';
+       ctx.textAlign = 'center';
+       ctx.lineWidth = 3;
+       ctx.strokeStyle = '#000';
+       ctx.strokeText('P' + (p.index + 1), p.robot.x + p.robot.model.w/2, p.robot.y - 4);
+       ctx.fillStyle = p.team === 'red' ? '#ef4444' : '#3b82f6';
+       ctx.fillText('P' + (p.index + 1), p.robot.x + p.robot.model.w/2, p.robot.y - 4);
+       ctx.restore();
     }
 
     ctx.fillStyle = "#fbbf24"; balls.forEach(b => { ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, Math.PI*2); ctx.fill(); });
     projectiles.forEach(p => { ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI*2); ctx.fill(); });
 
-    // Show warning if a robot is too full to go under the trench
-    const robots = p2Enabled ? [botRed, botBlue] : [botRed];
-    for (let bot of robots) {
-        if (bot.inventory >= 85) {  // ← Corrected condition
-            ctx.save();
-            ctx.font = 'bold 32px "Segoe UI", system-ui';
-            ctx.textAlign = 'center';
-            ctx.shadowBlur = 0;
-            const worldX = bot.x + bot.model.w/2;
-            const worldY = bot.y + bot.model.h/2 - bot.model.h/2 - 10;
-            // White outline
-            ctx.lineWidth = 3;
-            ctx.strokeStyle = '#ffffff';
-            ctx.strokeText('⚠', worldX, worldY);
-            // Red fill
-            ctx.fillStyle = '#ff0000';
-            ctx.fillText('⚠', worldX, worldY);
-            ctx.restore();
-        }
+    // Too-full warning for every active robot
+    for (const p of activePlayers()) {
+       const bot = p.robot;
+       if (bot.inventory >= 85) {
+           ctx.save();
+           ctx.font = 'bold 32px "Segoe UI", system-ui';
+           ctx.textAlign = 'center';
+           ctx.shadowBlur = 0;
+           const worldX = bot.x + bot.model.w/2;
+           const worldY = bot.y + bot.model.h/2 - bot.model.h/2 - 10;
+           ctx.lineWidth = 3;
+           ctx.strokeStyle = '#ffffff';
+           ctx.strokeText('⚠', worldX, worldY);
+           ctx.fillStyle = '#ff0000';
+           ctx.fillText('⚠', worldX, worldY);
+           ctx.restore();
+       }
     }
 
     ctx.restore(); requestAnimationFrame(draw);
@@ -1997,211 +1969,262 @@ window.addEventListener('keyup', e => { keys[e.code] = false; if (['Space', 'Arr
 window.addEventListener('blur', () => { for (let k in keys) keys[k] = false; });
 document.querySelectorAll('button').forEach(btn => btn.addEventListener('click', function() { this.blur(); }));
 
-function getRedStartPos() {
+function getRedStartPos(idx) {
     let x = 156.61 * S - 45;
     let y = FIELD_H/2 - 17.5;
-    if (p1StartIdx === 1) {
+    if (idx === 1) {
         x = 156.61 * S - 20;
         y = (FIELD_H/2 - HUB_S/2 - BUMP_L - BAR_L) - (TRENCH_L/2) - 17.5;
-    } else if (p1StartIdx === 2) {
+    } else if (idx === 2) {
         x = 156.61 * S - 20;
         y = (FIELD_H/2 + HUB_S/2 + BUMP_L + BAR_L) + (TRENCH_L/2) - 17.5;
     }
     return {x, y, a: 0};
 }
 
-function getBlueStartPos() {
-    if (sameTeamMode) {
-         let x = 156.61 * S - 45; let y = FIELD_H/2 + 20;
-         if (p2StartIdx === 1) { x = 156.61 * S - 20; y = (FIELD_H/2 - HUB_S/2 - BUMP_L - BAR_L) - (TRENCH_L/2) + 20; }
-         if (p2StartIdx === 2) { x = 156.61 * S - 20; y = (FIELD_H/2 + HUB_S/2 + BUMP_L + BAR_L) + (TRENCH_L/2) + 20; }
-         return {x, y, a: 0};
-    }
+function getBlueStartPos(idx) {
     let x = FIELD_W - (156.61 * S) + 10;
     let y = FIELD_H/2 - 17.5;
-    if (p2StartIdx === 1) {
+    if (idx === 1) {
         x = FIELD_W - (156.61 * S) - 15;
         y = (FIELD_H/2 - HUB_S/2 - BUMP_L - BAR_L) - (TRENCH_L/2) - 17.5;
-    } else if (p2StartIdx === 2) {
+    } else if (idx === 2) {
         x = FIELD_W - (156.61 * S) - 15;
         y = (FIELD_H/2 + HUB_S/2 + BUMP_L + BAR_L) + (TRENCH_L/2) - 17.5;
     }
     return {x, y, a: Math.PI};
 }
 
-function resetBots() {
-    let rPos = getRedStartPos();
-    botRed.x = rPos.x; botRed.y = rPos.y; botRed.vx=0; botRed.vy=0; botRed.vAngle=0; botRed.angle=rPos.a;
-    // Reset toggle states on spawn
-    botRed.prevIntakeInput = false;
-
-    if (p2Enabled) {
-        let bPos = getBlueStartPos();
-        botBlue.x = bPos.x; botBlue.y = bPos.y; botBlue.angle = bPos.a;
-        botBlue.vx=0; botBlue.vy=0; botBlue.vAngle=0;
-        botBlue.prevIntakeInput = false;
+function getStartPos(p) {
+    let pos;
+    if (sameTeamMode) {
+        pos = getRedStartPos(p.startIdx);
+        pos.x -= Math.floor(p.index / TEAM_SIZE) * 34;   // second trio spawns behind
+    } else {
+        pos = p.team === 'red' ? getRedStartPos(p.startIdx) : getBlueStartPos(p.startIdx);
     }
-
-    botRed.resetAIState();
-    if (p2Enabled) botBlue.resetAIState();
-
-    // Reset unstick logic
-    p1UnstickUsed = false; p2UnstickUsed = false;
-    p1FreezeUntil = 0; p2FreezeUntil = 0;
-    document.getElementById('p1-unstick').classList.remove('disabled');
-    document.getElementById('p2-unstick').classList.remove('disabled');
+    // Spread players sharing the same start slot
+    const dup = players.filter(q =>
+        q.enabled && q !== p && q.team === p.team &&
+        q.startIdx === p.startIdx && q.index < p.index).length;
+    if (dup > 0) pos.y += dup * 26;
+    return pos;
 }
 
-// ── UNSTICK TELEPORT BUTTONS ── //
-document.getElementById('p1-unstick').onclick = function() {
-    if (!matchRunning || p1UnstickUsed) return;
-    p1UnstickUsed = true;
-    this.classList.add('disabled');
+function resetBots() {
+    for (const p of players) {
+        const pos = getStartPos(p);
+        const r = p.robot;
+        r.x = pos.x; r.y = pos.y;
+        r.vx = 0; r.vy = 0; r.vAngle = 0; r.angle = pos.a;
+        r.inventory = 0;
+        r.disruptedUntil = 0;
+        r.prevIntakeInput = false;
+        r.resetAIState();
+        p.unstickUsed = false;
+        p.freezeUntil = 0;
+    }
+    updateHeldDisplay();
+    refreshPlayerButtons();
+}
 
-    let rPos = getRedStartPos();
-    botRed.x = rPos.x; botRed.y = rPos.y;
-    botRed.vx = 0; botRed.vy = 0; botRed.vAngle = 0; botRed.angle = rPos.a;
+// ── DYNAMIC 6-PLAYER MENU ── //
+const playersContainer = document.getElementById('players-container');
 
-    p1FreezeUntil = Date.now() + 3000;
-};
+function refreshPlayerButtons() {
+    for (const p of players) {
+        const b = p._btns;
+        if (!b) continue;
+        const cls = p.team === 'red' ? 'red-team' : 'blue-team';
+        const block = b.block;
+        block.classList.toggle('red-border',  p.team === 'red');
+        block.classList.toggle('blue-border', p.team === 'blue');
+        b.onBtn.className    = cls + (p.enabled ? '' : ' disabled');
+        b.onBtn.textContent  = `PLAYER ${p.index+1}: ${p.enabled ? 'ON' : 'OFF'}`;
+        b.modelBtn.className = cls;
+        b.inputBtn.className = cls;
+        b.padBtn.className   = cls;
+        b.startBtn.className = cls;
+        const unstickOff = !matchRunning || p.unstickUsed || !p.enabled;
+        b.unstickBtn.className = cls + ' btn-unstick' + (unstickOff ? ' disabled' : '');
+    }
+}
 
-document.getElementById('p2-unstick').onclick = function() {
-    if (!matchRunning || p2UnstickUsed || !p2Enabled) return;
-    p2UnstickUsed = true;
-    this.classList.add('disabled');
+function buildPlayerMenu() {
+    playersContainer.innerHTML = '';
+    for (const p of players) {
+        const block = document.createElement('div');
+        block.className = 'player-block';
 
-    let bPos = getBlueStartPos();
-    botBlue.x = bPos.x; botBlue.y = bPos.y;
-    botBlue.vx = 0; botBlue.vy = 0; botBlue.vAngle = 0; botBlue.angle = bPos.a;
+        const onBtn = document.createElement('button');
+        onBtn.classList.add('span2');
+        onBtn.onclick = () => {
+            if (matchRunning || startCountdown > 0) return;
+            p.enabled = !p.enabled;
+            resetBots();
+        };
 
-    p2FreezeUntil = Date.now() + 3000;
-};
+        const modelBtn = document.createElement('button');
+        modelBtn.onclick = () => {
+            if (matchRunning || startCountdown > 0) return;
+            const mk = Object.keys(BOT_MODELS);
+            const key = mk[(mk.indexOf(p.robot.name) + 1) % mk.length];
+            p.robot.setModel(key);
+            modelBtn.textContent = `P${p.index+1}: ${key}`;
+        };
+        modelBtn.textContent = `P${p.index+1}: ${p.robot.name}`;
 
-document.getElementById('p1-start-toggle').onclick = function() {
-    if (matchRunning || startCountdown > 0) return;
-    p1StartIdx = (p1StartIdx + 1) % 3;
-    this.innerText = "P1 START: " + START_LABELS[p1StartIdx];
-    resetBots();
-};
+        const inputBtn = document.createElement('button');
+        const inputLabel = () => `P${p.index+1}: ${p.input.toUpperCase()}${p.input === 'ai' ? ' 🤖' : ''}`;
+        inputBtn.onclick = () => {
+            p.input = inputCycle[(inputCycle.indexOf(p.input) + 1) % inputCycle.length];
+            inputBtn.textContent = inputLabel();
+            updateGamepadStatusUI();
+        };
+        inputBtn.textContent = inputLabel();
 
-document.getElementById('p2-start-toggle').onclick = function() {
-    if (matchRunning || startCountdown > 0) return;
-    p2StartIdx = (p2StartIdx + 1) % 3;
-    this.innerText = "P2 START: " + START_LABELS[p2StartIdx];
-    resetBots();
-};
+        const padBtn = document.createElement('button');
+        padBtn.onclick = () => {
+            p.gamepadIndex = (p.gamepadIndex + 1) % NUM_PLAYERS;
+            padBtn.textContent = `P${p.index+1} PAD: ${p.gamepadIndex}`;
+            updateGamepadStatusUI();
+        };
+        padBtn.textContent = `P${p.index+1} PAD: ${p.gamepadIndex}`;
 
+        const startBtn = document.createElement('button');
+        startBtn.onclick = () => {
+            if (matchRunning || startCountdown > 0) return;
+            p.startIdx = (p.startIdx + 1) % START_LABELS.length;
+            startBtn.textContent = `P${p.index+1} START: ${START_LABELS[p.startIdx]}`;
+            resetBots();
+        };
+        startBtn.textContent = `P${p.index+1} START: ${START_LABELS[p.startIdx]}`;
+
+        const unstickBtn = document.createElement('button');
+        unstickBtn.classList.add('span2');
+        unstickBtn.textContent = `P${p.index+1} UNSTICK (1)`;
+        unstickBtn.onclick = () => {
+            if (!matchRunning || p.unstickUsed || !p.enabled) return;
+            p.unstickUsed = true;
+            const pos = getStartPos(p);
+            const r = p.robot;
+            r.x = pos.x; r.y = pos.y;
+            r.vx = 0; r.vy = 0; r.vAngle = 0; r.angle = pos.a;
+            p.freezeUntil = Date.now() + 3000;
+            refreshPlayerButtons();
+        };
+
+        p._btns = { block, onBtn, modelBtn, inputBtn, padBtn, startBtn, unstickBtn };
+
+        block.append(onBtn, modelBtn, inputBtn, padBtn, startBtn, unstickBtn);
+        playersContainer.appendChild(block);
+    }
+    refreshPlayerButtons();
+}
+
+// ── CONTROLS ── //
 document.getElementById('toggle-controls-btn').onclick = function() {
     const p = document.getElementById('control-panel'); p.classList.toggle('collapsed');
     this.innerText = p.classList.contains('collapsed') ? "☰ SHOW CONTROLS" : "☰ HIDE CONTROLS";
 };
 
-// ── CONTROLS MODAL LOGIC ── //
-
 document.getElementById('team-mode-toggle').onclick = function() {
-    sameTeamMode = !sameTeamMode; this.innerText = "TEAM: " + (sameTeamMode ? "CO-OP (RED)" : "SEPARATE");
-    document.getElementById('bot-blue-toggle').className = sameTeamMode ? "red-team" : "blue-team";
-    document.getElementById('p2-input-toggle').className = sameTeamMode ? "red-team" : "blue-team";
-    document.getElementById('p2-start-toggle').className = sameTeamMode ? "red-team" : "blue-team";
-    document.getElementById('p2-unstick').className = sameTeamMode ? "red-team btn-unstick" : "blue-team btn-unstick";
-
-    if (sameTeamMode && p2UnstickUsed) document.getElementById('p2-unstick').classList.add('disabled');
-    else if (!sameTeamMode && p2UnstickUsed) document.getElementById('p2-unstick').classList.add('disabled');
-
+    sameTeamMode = !sameTeamMode;
+    this.innerText = "TEAM: " + (sameTeamMode ? "CO-OP (RED)" : "SEPARATE");
     document.getElementById('reset-btn').click();
 };
 
 const inputCycle = ['keyboard', 'keyboard2', 'controller', 'ai'];
 
-document.getElementById('p1-input-toggle').onclick = function() {
-    let idx = inputCycle.indexOf(p1Input);
-    idx = (idx + 1) % inputCycle.length;
-    p1Input = inputCycle[idx];
-    this.innerText = "P1: " + p1Input.toUpperCase() + (p1Input === 'ai' ? ' 🤖' : '');
-    updateGamepadStatusUI();
-};
-
-document.getElementById('p2-input-toggle').onclick = function() {
-    let idx = inputCycle.indexOf(p2Input);
-    idx = (idx + 1) % inputCycle.length;
-    p2Input = inputCycle[idx];
-    this.innerText = "P2: " + p2Input.toUpperCase() + (p2Input === 'ai' ? ' 🤖' : '');
-    updateGamepadStatusUI();
-};
-
-document.getElementById('p2-toggle').onclick = () => {
-    p2Enabled = !p2Enabled; let btn = document.getElementById('p2-toggle');
-    if (p2Enabled) { btn.innerText = "PLAYER 2: ON"; btn.classList.remove('disabled'); resetBots(); }
-    else { btn.innerText = "PLAYER 2: OFF"; btn.classList.add('disabled'); botBlue.x = -1000; botBlue.y = -1000; }
-};
-
 document.getElementById('start-btn').onclick = () => {
     if (matchRunning || startCountdown > 0) {
-        matchRunning = false; startCountdown = 0; endCooldown = 0; if (countdownInterval) clearInterval(countdownInterval);
-        document.getElementById('start-btn').innerText = '▶ START MATCH'; document.getElementById('start-btn').classList.remove('running');
-        document.getElementById('match-clock').className = 'stopped'; document.getElementById('match-clock').innerText = "2:20";
-        document.getElementById('phase-label').innerText = 'MATCH STOPPED'; document.getElementById('phase-timer').innerText = "";
-        document.getElementById('p1-unstick').classList.add('disabled'); document.getElementById('p2-unstick').classList.add('disabled');
+        matchRunning = false; startCountdown = 0; endCooldown = 0;
+        if (countdownInterval) clearInterval(countdownInterval);
+        document.getElementById('start-btn').innerText = '▶ START MATCH';
+        document.getElementById('start-btn').classList.remove('running');
+        document.getElementById('match-clock').className = 'stopped';
+        document.getElementById('match-clock').innerText = "2:20";
+        document.getElementById('phase-label').innerText = 'MATCH STOPPED';
+        document.getElementById('phase-timer').innerText = "";
         updateHubUI(false, false);
+        refreshPlayerButtons();
     } else {
-
-        // Auto-hide controls when match starts
         const panel = document.getElementById('control-panel');
         if (!panel.classList.contains('collapsed')) {
             panel.classList.add('collapsed');
             document.getElementById('toggle-controls-btn').innerText = "☰ SHOW CONTROLS";
         }
 
-        scoreRed = 0; scoreBlue = 0; document.getElementById('scoreRedDisplay').innerText = 0; document.getElementById('scoreBlueDisplay').innerText = 0;
-        botRed.inventory = 0; botBlue.inventory = 0; document.getElementById('heldRed').innerText = 0; document.getElementById('heldBlue').innerText = 0;
-        autoScoreRed = 0; autoScoreBlue = 0; autoPhaseEnded = false; currentPhaseIdx = -1; spawnBalls(); resetBots();
+        scoreRed = 0; scoreBlue = 0;
+        document.getElementById('scoreRedDisplay').innerText = 0;
+        document.getElementById('scoreBlueDisplay').innerText = 0;
+        for (const p of players) p.robot.inventory = 0;
+        updateHeldDisplay();
+        autoScoreRed = 0; autoScoreBlue = 0; autoPhaseEnded = false; currentPhaseIdx = -1;
+        spawnBalls(); resetBots();
 
-        startCountdown = 3; document.getElementById('match-clock').innerText = startCountdown; document.getElementById('match-clock').className = 'stopped';
-        document.getElementById('phase-label').innerText = "MATCH STARTING..."; document.getElementById('phase-timer').innerText = "";
-        document.getElementById('start-btn').innerText = '⏹ CANCEL START'; document.getElementById('start-btn').classList.add('running');
+        startCountdown = 3;
+        document.getElementById('match-clock').innerText = startCountdown;
+        document.getElementById('match-clock').className = 'stopped';
+        document.getElementById('phase-label').innerText = "MATCH STARTING...";
+        document.getElementById('phase-timer').innerText = "";
+        document.getElementById('start-btn').innerText = '⏹ CANCEL START';
+        document.getElementById('start-btn').classList.add('running');
         countdownInterval = setInterval(() => {
             startCountdown--;
             if (startCountdown > 0) document.getElementById('match-clock').innerText = startCountdown;
             else {
                 clearInterval(countdownInterval); startCountdown = 0; matchElapsed = 0; matchRunning = true;
                 playSound('autoStart');
-                updateHubUI(true, true); document.getElementById('start-btn').innerText = '⏹ STOP MATCH';
-
-                // Enable unstick buttons when match begins (if they haven't been used somehow)
-                if(!p1UnstickUsed) document.getElementById('p1-unstick').classList.remove('disabled');
-                if(!p2UnstickUsed) document.getElementById('p2-unstick').classList.remove('disabled');
+                updateHubUI(true, true);
+                document.getElementById('start-btn').innerText = '⏹ STOP MATCH';
+                refreshPlayerButtons();
             }
         }, 1000);
     }
 };
 
-document.getElementById('bot-red-toggle').onclick = () => {
-    if (matchRunning || startCountdown > 0) return;
-    const mk = Object.keys(BOT_MODELS); botRed.setModel(mk[(mk.indexOf(botRed.name)+1)%mk.length]); document.getElementById('bot-red-toggle').innerText = "PLAYER 1: " + botRed.name;
-};
-document.getElementById('bot-blue-toggle').onclick = () => {
-    if (matchRunning || startCountdown > 0) return;
-    const mk = Object.keys(BOT_MODELS); botBlue.setModel(mk[(mk.indexOf(botBlue.name)+1)%mk.length]); document.getElementById('bot-blue-toggle').innerText = "PLAYER 2: " + botBlue.name;
-};
-
 document.getElementById('reset-btn').onclick = () => {
-    matchRunning = false; scoreRed = 0; scoreBlue = 0; startCountdown = 0; endCooldown = 0; if (countdownInterval) clearInterval(countdownInterval);
-    document.getElementById('scoreRedDisplay').innerText = 0; document.getElementById('scoreBlueDisplay').innerText = 0;
-    botRed.inventory = 0; botBlue.inventory = 0; document.getElementById('heldRed').innerText = 0; document.getElementById('heldBlue').innerText = 0;
-    matchElapsed = 0; document.getElementById('match-clock').innerText = "2:20"; document.getElementById('match-clock').className = 'stopped';
-    document.getElementById('phase-label').innerText = "MATCH NOT STARTED"; document.getElementById('phase-timer').innerText = "";
-    document.getElementById('start-btn').innerText = "▶ START MATCH"; document.getElementById('start-btn').classList.remove('running');
-
-    // Disable unstick buttons when match is stopped
-    document.getElementById('p1-unstick').classList.add('disabled');
-    document.getElementById('p2-unstick').classList.add('disabled');
-
-    updateHubUI(false, false); spawnBalls(); resetBots();
+    matchRunning = false; scoreRed = 0; scoreBlue = 0; startCountdown = 0; endCooldown = 0;
+    if (countdownInterval) clearInterval(countdownInterval);
+    document.getElementById('scoreRedDisplay').innerText = 0;
+    document.getElementById('scoreBlueDisplay').innerText = 0;
+    for (const p of players) p.robot.inventory = 0;
+    updateHeldDisplay();
+    matchElapsed = 0;
+    document.getElementById('match-clock').innerText = "2:20";
+    document.getElementById('match-clock').className = 'stopped';
+    document.getElementById('phase-label').innerText = "MATCH NOT STARTED";
+    document.getElementById('phase-timer').innerText = "";
+    document.getElementById('start-btn').innerText = "▶ START MATCH";
+    document.getElementById('start-btn').classList.remove('running');
+    updateHubUI(false, false);
+    spawnBalls(); resetBots();
 };
 
-// Initially hide controls panel
+// ── BOOT ── //
 document.getElementById('control-panel').classList.add('collapsed');
 document.getElementById('toggle-controls-btn').innerText = "☰ SHOW CONTROLS";
 
-initField(); spawnBalls(); updateHubUI(false, false);
-setInterval(update, 1000/60); draw();
+window.addEventListener('gamepadconnected', handleGamepadConnected);
+window.addEventListener('gamepaddisconnected', handleGamepadDisconnected);
+setInterval(() => {
+    const gps = navigator.getGamepads();
+    for (let i = 0; i < gps.length; i++) {
+        if (gps[i] && (!gamepads[i] || gamepads[i].id !== gps[i].id)) gamepads[i] = gps[i];
+        else if (!gps[i] && gamepads[i]) gamepads[i] = null;
+    }
+    updateGamepadStatusUI();
+}, 500);
+
+// Delegated blur so dynamically created buttons also lose focus
+document.addEventListener('click', e => { if (e.target.tagName === 'BUTTON') e.target.blur(); });
+
+initField();
+buildPlayerMenu();
+spawnBalls();
+updateHubUI(false, false);
+resetBots();
+updateGamepadStatusUI();
+setInterval(update, 1000/60);
+draw();
