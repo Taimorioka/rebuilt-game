@@ -234,13 +234,20 @@ function calculateBallScore(robot, ball, allBalls) {
         if (d < AI_DENSITY_RADIUS) density += 1 - d / AI_DENSITY_RADIUS;
     }
 
-    return (1 / (dist + 50)) * (1 + density * 3);
+    // Teammate reservation: heavily downweight balls someone else is already
+    // chasing.  `robot.identity` lets the route-planning ghost score as if it
+    // were the real robot (so it doesn't penalize its own claim).
+    const identity = robot.identity || robot;
+    let ownership = 1;
+    if (ball.reservedBy && ball.reservedBy !== identity) ownership = 0.12;
+
+    return (1 / (dist + 50)) * (1 + density * 3) * ownership;
 }
 
 function greedyRouteByScore(robot, start, pool, maxCount) {
     const route = [];
     const remaining = [...pool];
-    const ghost = { x: 0, y: 0, model: robot.model };
+    const ghost = { x: 0, y: 0, model: robot.model, identity: robot };
     let current = start;
     const limit = maxCount != null ? maxCount : remaining.length;
     while (remaining.length > 0 && route.length < limit) {
@@ -351,6 +358,9 @@ class Robot {
         this.shootTargets = [];
         this.shootTargetIdx = 0;
         this.shootReplanTimer = 0;
+
+        this.disruptedUntil = 0;
+        this.claimedBall = null;
     }
 
     resetAIState() {
@@ -372,6 +382,11 @@ class Robot {
         this.navTimer = 0;
         this.navGoal = null;
         this.shootReplanTimer = 0;
+
+        if (this.claimedBall && this.claimedBall.reservedBy === this) {
+            this.claimedBall.reservedBy = null;
+        }
+        this.claimedBall = null;
     }
 
     setModel(key) {
@@ -1582,6 +1597,21 @@ function getAIAction(robot, alliance) {
     }
 
     // -------- Path planning around static obstacles --------
+
+    // -------- Teammate coordination: reserve the ball we're driving to --------
+    let activeTarget = null;
+    if (state === 'collect' && robot.plannedTargets[robot.targetIndex]) {
+        activeTarget = robot.plannedTargets[robot.targetIndex];
+    } else if (state === 'shoot' && robot.shootTargets[robot.shootTargetIdx]) {
+        activeTarget = robot.shootTargets[robot.shootTargetIdx];
+    }
+    if (robot.claimedBall && robot.claimedBall !== activeTarget &&
+        robot.claimedBall.reservedBy === robot) {
+        robot.claimedBall.reservedBy = null;
+    }
+    robot.claimedBall = activeTarget || null;
+    if (activeTarget) activeTarget.reservedBy = robot;
+
     ensureNavGrid(robot);
     robot.navTimer += 1/60;
 
@@ -1644,17 +1674,39 @@ function getAIAction(robot, alliance) {
         }
     }
 
-    // Always push away from the other active robots so they don't lock together.
+    // Cooperative separation: predictive + lateral so teammates slide past
+    // each other instead of head-butting over the same ball.
     for (const other of activeRobots()) {
         if (other === robot) continue;
-        const dx = rcx - (other.x + other.model.w / 2);
-        const dy = rcy - (other.y + other.model.h / 2);
+        const otherCX = other.x + other.model.w / 2;
+        const otherCY = other.y + other.model.h / 2;
+        const dx = rcx - otherCX;
+        const dy = rcy - otherCY;
         const dist = Math.hypot(dx, dy);
-        if (dist < 70 && dist > 0.001) {
-            const strength = (70 - dist) / 70;
-            repX += (dx / dist) * strength * 0.9;
-            repY += (dy / dist) * strength * 0.9;
-        }
+        if (dist >= 95 || dist < 0.001) continue;
+
+        const nx = dx / dist;
+        const ny = dy / dist;
+
+        // Only push hard when the two bots are actually closing the gap.
+        const relVx = robot.vx - other.vx;
+        const relVy = robot.vy - other.vy;
+        const closing = -(relVx * nx + relVy * ny);
+        const closingBoost = closing > 0 ? 1 + Math.min(closing * 0.15, 0.9) : 0.55;
+
+        const strength = (95 - dist) / 95;
+
+        // Radial push — spread teammates early, before they overlap.
+        repX += nx * strength * 0.75 * closingBoost;
+        repY += ny * strength * 0.75 * closingBoost;
+
+        // Lateral steer so we route around them rather than through them.
+        // Pick the perpendicular side that still heads us toward our goal.
+        const perpX = -ny, perpY = nx;
+        const side = (perpX * moveX + perpY * moveY) >= 0 ? -1 : 1;
+        const lateral = strength * 0.55 * closingBoost;
+        repX += perpX * side * lateral;
+        repY += perpY * side * lateral;
     }
 
     // Wall repulsion (lighter when a path already keeps the bot clear of walls)
@@ -2075,7 +2127,7 @@ function buildPlayerMenu() {
         modelBtn.textContent = `P${p.index+1}: ${p.robot.name}`;
 
         const inputBtn = document.createElement('button');
-        const inputLabel = () => `P${p.index+1}: ${p.input.toUpperCase()}${p.input === 'ai' ? ' 🤖' : ''}`;
+        const inputLabel = () => `P${p.index+1}: ${p.input.toUpperCase()}${p.input === 'ai' ? '' : ''}`;
         inputBtn.onclick = () => {
             p.input = inputCycle[(inputCycle.indexOf(p.input) + 1) % inputCycle.length];
             inputBtn.textContent = inputLabel();
