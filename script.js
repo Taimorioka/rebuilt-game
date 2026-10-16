@@ -257,16 +257,40 @@ function calculateBallScore(robot, ball, allBalls) {
     const rcx = robot.x + robot.model.w/2;
     const rcy = robot.y + robot.model.h/2;
     const dist = distanceBetween({x: rcx, y: rcy}, ball);
-    if (dist < 1) return Infinity; // extremely close
+    if (dist < 1) return Infinity;
 
-    // Density: count balls within AI_DENSITY_RADIUS (excluding itself)
+    // Weighted proximity density — neighbours closer to `ball` count more.
     let density = 0;
     for (const other of allBalls) {
         if (other === ball) continue;
-        if (distanceBetween(ball, other) < AI_DENSITY_RADIUS) density++;
+        const d = distanceBetween(ball, other);
+        if (d < AI_DENSITY_RADIUS) density += 1 - d / AI_DENSITY_RADIUS;
     }
-    // Score = inverse distance * (1 + density factor)
-    return (1 / dist) * (1 + density * 0.1);
+
+    return (1 / (dist + 50)) * (1 + density * 3);
+}
+
+function greedyRouteByScore(robot, start, pool, maxCount) {
+    const route = [];
+    const remaining = [...pool];
+    const ghost = { x: 0, y: 0, model: robot.model };
+    let current = start;
+    const limit = maxCount != null ? maxCount : remaining.length;
+    while (remaining.length > 0 && route.length < limit) {
+        ghost.x = current.x - robot.model.w / 2;
+        ghost.y = current.y - robot.model.h / 2;
+        let bestIdx = -1, bestScore = -Infinity;
+        for (let i = 0; i < remaining.length; i++) {
+            const s = calculateBallScore(ghost, remaining[i], remaining);
+            if (s > bestScore) { bestScore = s; bestIdx = i; }
+        }
+        if (bestIdx === -1) break;
+        const next = remaining[bestIdx];
+        route.push(next);
+        current = next;
+        remaining.splice(bestIdx, 1);
+    }
+    return route;
 }
 
 function selectTopBalls(robot, allBalls, count) {
@@ -284,32 +308,23 @@ function getBallsInShootingZone(alliance, allBalls) {
     });
 }
 
-function planRoute(robot, alliance) {
-    const allBalls = balls; // global
+function getOffPhaseBalls(alliance) {
+    if (alliance === 'red') return balls.filter(b => b.x > RED_SHOOT_LIMIT);
+    return balls.filter(b => b.x < BLUE_SHOOT_LIMIT);
+}
+
+function planRoute(robot, alliance, ballPool) {
+    const allBalls = ballPool || balls; // global fallback
     if (allBalls.length === 0) return [];
 
     // Select top candidates
     const topBalls = selectTopBalls(robot, allBalls, AI_PLAN_HORIZON);
     if (topBalls.length === 0) return [];
 
-    // Build initial route: start from robot centre
+    // Build initial route: start from robot centre, then greedily pick the
+    // highest-scoring next ball (same calculateBallScore used by pass & shoot).
     const start = { x: robot.x + robot.model.w/2, y: robot.y + robot.model.h/2 };
-    let route = [start];
-    let remaining = [...topBalls];
-    let current = start;
-
-    while (remaining.length > 0) {
-        let minDist = Infinity, minIdx = -1;
-        for (let i = 0; i < remaining.length; i++) {
-            const d = distanceBetween(current, remaining[i]);
-            if (d < minDist) { minDist = d; minIdx = i; }
-        }
-        if (minIdx === -1) break;
-        const next = remaining[minIdx];
-        route.push(next);
-        current = next;
-        remaining.splice(minIdx, 1);
-    }
+    const route = [start, ...greedyRouteByScore(robot, start, topBalls)];
 
     // 2‑opt improvement (keep start fixed at index 0)
     if (route.length > 3) {
@@ -1384,7 +1399,7 @@ function getAIAction(robot, alliance) {
             state = 'approach hub';
             robot.aiState = 'approach hub';
             robot.aiShootTimer = 0;
-        } else if (robot.inventory >= robot.model.capacity * 0.5 && !hubActive) {
+        } else if (robot.inventory >= robot.model.capacity && !hubActive) {
             state = 'approach mid';
             robot.aiState = 'approach mid';
             robot.aiShootTimer = 0;
@@ -1403,7 +1418,8 @@ function getAIAction(robot, alliance) {
             if (!replan && robot.replanTimer > AI_REPLAN_INTERVAL) replan = true;
 
             if (replan) {
-                const newRoute = planRoute(robot, alliance);
+                const pool = hubActive ? balls : getOffPhaseBalls(alliance);
+                const newRoute = planRoute(robot, alliance, pool);
                 robot.plannedTargets = newRoute;
                 robot.targetIndex = 0;
                 robot.replanTimer = 0;
@@ -1430,7 +1446,9 @@ function getAIAction(robot, alliance) {
             robot.aiState = 'shoot';
             robot.aiShootTimer = 0;
         }
-        targetX = shootLine;
+
+        const hubApproachMargin = 30;
+        targetX = shootLine + (alliance === 'red' ? -hubApproachMargin : hubApproachMargin);
         targetY = robot.y;
     }
 
@@ -1456,21 +1474,12 @@ function getAIAction(robot, alliance) {
             robot.aiShootTimer = 0;
         }
 
-
         act = true;
 
-        let bestDist = Infinity;
-        let bestBall = null;
-        for (const b of balls) {
-            const dx = b.x - rcx;
-            const dy = b.y - rcy;
-            const d = dx * dx + dy * dy;
-            if (d < bestDist) {
-                bestDist = d;
-                bestBall = b;
-            }
-        }
-        if (bestBall) {
+        const passPool = getOffPhaseBalls(alliance);
+        const passRoute = greedyRouteByScore(robot, { x: rcx, y: rcy }, passPool, 1);
+        if (passRoute.length > 0) {
+            const bestBall = passRoute[0];
             targetX = bestBall.x + (Math.random() - 0.5) * 30;
             targetY = bestBall.y + (Math.random() - 0.5) * 30;
         } else {
@@ -1485,38 +1494,50 @@ function getAIAction(robot, alliance) {
             robot.shootTargets = [];
         }
 
+        // --- Exit conditions ---
         if (robot.inventory === 0 || !hubActive) {
             state = 'collect';
             robot.aiState = 'collect';
             robot.aiShootTimer = 0;
             robot.shootTargets = [];
             robot.shootTargetIdx = 0;
-        }
-
-        if (!isShootingZone) {
-            state = 'approach hub';
-            robot.aiState = 'approach hub';
-            robot.aiShootTimer = 0;
-            robot.shootTargets = [];
-            robot.shootTargetIdx = 0;
-        }
-
-        // --- NEW: if no balls in the shooting zone, go collect elsewhere ---
-        if (state === 'shoot' && isShootingZone) {
-            const zoneBalls = getBallsInShootingZone(alliance, balls);
-            if (zoneBalls.length === 0) {
-                // No balls on this side → switch to collect mode
-                state = 'collect';
-                robot.aiState = 'collect';
+        } else {
+            // Hysteresis: only abandon the shooting line once we are clearly
+            // outside the zone. Prevents boundary flicker ("changing its mind").
+            const shootExitMargin = 25;
+            const clearlyOutside = alliance === 'red'
+                ? rcx > RED_SHOOT_LIMIT + shootExitMargin
+                : rcx < BLUE_SHOOT_LIMIT - shootExitMargin;
+            if (clearlyOutside) {
+                // NOTE: was previously 'approach' (an invalid state name that
+                // fell through every branch and drove the bot to field center).
+                state = 'approach hub';
+                robot.aiState = 'approach hub';
                 robot.aiShootTimer = 0;
                 robot.shootTargets = [];
                 robot.shootTargetIdx = 0;
-                // Set a temporary target to trigger a replan in collect state
-                targetX = FIELD_W / 2;
-                targetY = FIELD_H / 2;
+            }
+        }
+
+        // --- Still committed to shooting ---
+        if (state === 'shoot') {
+            // We're here because inventory > 0 and the hub is live. Fire.
+            act = true;
+
+            const zoneBalls = getBallsInShootingZone(alliance, balls);
+            if (zoneBalls.length === 0) {
+                // Nothing left to scoop nearby. HOLD the line and empty the
+                // hopper. Bailing to 'collect' here bounced straight back into
+                // 'approach hub' -> infinite ping-pong on the shooting line.
+                const safeX = alliance === 'red'
+                    ? Math.min(rcx, RED_SHOOT_LIMIT - 20)
+                    : Math.max(rcx, BLUE_SHOOT_LIMIT + 20);
+                targetX = safeX;
+                targetY = rcy;
+                robot.shootTargets = [];
+                robot.shootTargetIdx = 0;
             } else {
                 // Normal shoot behaviour: plan route inside the shooting zone
-                act = true;
                 robot.shootReplanTimer += 1/60;
 
                 let replan = false;
@@ -1524,7 +1545,10 @@ function getAIAction(robot, alliance) {
                     replan = true;
                 } else {
                     const currentTarget = robot.shootTargets[robot.shootTargetIdx];
-                    if (distanceBetween({x: rcx, y: rcy}, currentTarget) < 30) {
+                    // Advance only when the ball is actually gone (collected)
+                    // or we've physically rolled over it.
+                    const stillExists = balls.some(b => distanceBetween(b, currentTarget) < BALL_R * 3);
+                    if (!stillExists || distanceBetween({x: rcx, y: rcy}, currentTarget) < 18) {
                         robot.shootTargetIdx++;
                         if (robot.shootTargetIdx >= robot.shootTargets.length) replan = true;
                     }
@@ -1535,21 +1559,8 @@ function getAIAction(robot, alliance) {
                     const scored = zoneBalls.map(b => ({ ball: b, score: calculateBallScore(robot, b, zoneBalls) }));
                     scored.sort((a, b) => b.score - a.score);
                     const top = scored.slice(0, AI_PLAN_HORIZON).map(item => item.ball);
-                    let route = [];
-                    let current = {x: rcx, y: rcy};
-                    let remaining = [...top];
-                    while (remaining.length > 0) {
-                        let minDist = Infinity, minIdx = -1;
-                        for (let i = 0; i < remaining.length; i++) {
-                            const d = distanceBetween(current, remaining[i]);
-                            if (d < minDist) { minDist = d; minIdx = i; }
-                        }
-                        if (minIdx === -1) break;
-                        const next = remaining[minIdx];
-                        route.push(next);
-                        current = next;
-                        remaining.splice(minIdx, 1);
-                    }
+                    // Same score-based greedy picker as collect & pass.
+                    const route = greedyRouteByScore(robot, { x: rcx, y: rcy }, top);
                     if (route.length > 3) {
                         let improved = true;
                         while (improved) {
@@ -1579,15 +1590,12 @@ function getAIAction(robot, alliance) {
                     const t = robot.shootTargets[robot.shootTargetIdx];
                     targetX = t.x;
                     targetY = t.y;
+                } else if (hub) {
+                    targetX = hub.x + hub.w/2;
+                    targetY = hub.y + hub.h/2;
                 } else {
-                    // Fallback: move toward the hub if no balls in zone (shouldn't happen due to the check above)
-                    if (hub) {
-                        targetX = hub.x + hub.w/2;
-                        targetY = hub.y + hub.h/2;
-                    } else {
-                        targetX = FIELD_W / 2;
-                        targetY = FIELD_H / 2;
-                    }
+                    targetX = FIELD_W / 2;
+                    targetY = FIELD_H / 2;
                 }
             }
         }
