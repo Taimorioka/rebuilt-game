@@ -68,6 +68,7 @@ const NAV_DIRS = [
 ];
 let navCols = 0, navRows = 0, navBlocked = null, navKey = '';
 const navCache = new Map();
+let navDynamic = [];   // other robots, refreshed per-robot each frame
 
 // AI Planning constants
 const AI_PLAN_HORIZON = 15;
@@ -223,7 +224,9 @@ function distanceBetween(p1, p2) {
 function calculateBallScore(robot, ball, allBalls) {
     const rcx = robot.x + robot.model.w/2;
     const rcy = robot.y + robot.model.h/2;
-    const dist = distanceBetween({x: rcx, y: rcy}, ball);
+    const dx = ball.x - rcx;
+    const dy = ball.y - rcy;
+    const dist = Math.hypot(dx, dy);
     if (dist < 1) return Infinity;
 
     // Weighted proximity density — neighbours closer to `ball` count more.
@@ -241,7 +244,21 @@ function calculateBallScore(robot, ball, allBalls) {
     let ownership = 1;
     if (ball.reservedBy && ball.reservedBy !== identity) ownership = 0.12;
 
-    return (1 / (dist + 50)) * (1 + density * 3) * ownership;
+    // Orientation bias: strongly prefer balls in front of the robot,
+    // downweight balls to the side or behind.
+    let frontFactor = 1;
+    if (robot.angle !== undefined && dist > 0) {
+        const ux = dx / dist;
+        const uy = dy / dist;
+        const fx = Math.cos(robot.angle);
+        const fy = Math.sin(robot.angle);
+        const dot = ux * fx + uy * fy; // 1 = directly ahead, 0 = side, -1 = behind
+        // Map to [0,1] and square it so "front" is much more attractive
+        // than "side", while "behind" gets almost zero weight.
+        frontFactor = Math.pow((dot + 1) / 2, 2);
+    }
+
+    return (1 / (dist + 50)) * (1 + density * 4) * ownership * (frontFactor * 6);
 }
 
 function greedyRouteByScore(robot, start, pool, maxCount) {
@@ -291,13 +308,26 @@ function planRoute(robot, alliance, ballPool) {
     const allBalls = ballPool || balls; // global fallback
     if (allBalls.length === 0) return [];
 
+    const start = { x: robot.x + robot.model.w/2, y: robot.y + robot.model.h/2 };
+
+    // --- Commitment: if we already claimed a ball and it's still in the pool,
+    // keep it as the first waypoint.  Without this, the front-facing bias in
+    // calculateBallScore makes the AI swap targets every time it rotates
+    // (pick ball → turn toward it → another ball now scores higher → reverse).
+    const committed = robot.claimedBall;
+    if (committed && allBalls.includes(committed) &&
+        distanceBetween(start, committed) >= 30) {
+        const rest = allBalls.filter(b => b !== committed);
+        const topRest = selectTopBalls(robot, rest, AI_PLAN_HORIZON - 1);
+        return [committed, ...greedyRouteByScore(robot, committed, topRest)];
+    }
+
     // Select top candidates
     const topBalls = selectTopBalls(robot, allBalls, AI_PLAN_HORIZON);
     if (topBalls.length === 0) return [];
 
     // Build initial route: start from robot centre, then greedily pick the
     // highest-scoring next ball (same calculateBallScore used by pass & shoot).
-    const start = { x: robot.x + robot.model.w/2, y: robot.y + robot.model.h/2 };
     const route = [start, ...greedyRouteByScore(robot, start, topBalls)];
 
     // 2‑opt improvement (keep start fixed at index 0)
@@ -361,6 +391,10 @@ class Robot {
 
         this.disruptedUntil = 0;
         this.claimedBall = null;
+
+        this.escapeUntil = 0;
+        this.escapeDirX = 0;
+        this.escapeDirY = 0;
     }
 
     resetAIState() {
@@ -387,6 +421,10 @@ class Robot {
             this.claimedBall.reservedBy = null;
         }
         this.claimedBall = null;
+
+        this.escapeUntil = 0;
+        this.escapeDirX = 0;
+        this.escapeDirY = 0;
     }
 
     setModel(key) {
@@ -1213,7 +1251,16 @@ function getAIAction(robot, alliance) {
 
     function navCellFree(c, r) {
         if (c < 0 || r < 0 || c >= navCols || r >= navRows) return false;
-        return navBlocked[r * navCols + c] === 0;
+        if (navBlocked[r * navCols + c] !== 0) return false;
+        if (navDynamic.length) {
+            const cx = (c + 0.5) * NAV_CELL, cy = (r + 0.5) * NAV_CELL;
+            for (let i = 0; i < navDynamic.length; i++) {
+                const d = navDynamic[i];
+                const dx = cx - d.x, dy = cy - d.y;
+                if (dx * dx + dy * dy < d.r * d.r) return false;
+            }
+        }
+        return true;
     }
 
     function nearestFreeCell(c0, r0, maxRadius) {
@@ -1398,6 +1445,10 @@ function getAIAction(robot, alliance) {
             state = 'approach mid';
             robot.aiState = 'approach mid';
             robot.aiShootTimer = 0;
+        } else if(hubActive && isShootingZone && robot.inventory >= robot.model.capacity) {
+            state = 'shoot';
+            robot.aiState = 'shoot';
+            robot.aiShootTimer = 0;
         } else {
             const now = Date.now() / 1000;
             let replan = false;
@@ -1551,28 +1602,42 @@ function getAIAction(robot, alliance) {
                 if (!replan && robot.shootReplanTimer > AI_REPLAN_INTERVAL) replan = true;
 
                 if (replan && zoneBalls.length > 0) {
-                    const scored = zoneBalls.map(b => ({ ball: b, score: calculateBallScore(robot, b, zoneBalls) }));
-                    scored.sort((a, b) => b.score - a.score);
-                    const top = scored.slice(0, AI_PLAN_HORIZON).map(item => item.ball);
-                    // Same score-based greedy picker as collect & pass.
-                    const route = greedyRouteByScore(robot, { x: rcx, y: rcy }, top);
-                    if (route.length > 3) {
-                        let improved = true;
-                        while (improved) {
-                            improved = false;
-                            for (let i = 0; i < route.length - 2; i++) {
-                                for (let j = i + 1; j < route.length - 1; j++) {
-                                    const d1 = distanceBetween(route[i], route[i+1]) + distanceBetween(route[j], route[j+1]);
-                                    const d2 = distanceBetween(route[i], route[j]) + distanceBetween(route[i+1], route[j+1]);
-                                    if (d2 < d1 - 1e-9) {
-                                        const segment = route.slice(i+1, j+1);
-                                        segment.reverse();
-                                        route.splice(i+1, j - i, ...segment);
-                                        improved = true;
-                                        break;
+                    const startPos = { x: rcx, y: rcy };
+                    let route;
+                    const committed = robot.claimedBall;
+
+                    if (committed && zoneBalls.includes(committed) &&
+                        distanceBetween(startPos, committed) >= 30) {
+                        // Stick with the ball we already committed to.
+                        const rest = zoneBalls.filter(b => b !== committed);
+                        const restScored = rest.map(b => ({ ball: b, score: calculateBallScore(robot, b, rest) }));
+                        restScored.sort((a, b) => b.score - a.score);
+                        const top = restScored.slice(0, AI_PLAN_HORIZON - 1).map(item => item.ball);
+                        route = [committed, ...greedyRouteByScore(robot, committed, top)];
+                    } else {
+                        const scored = zoneBalls.map(b => ({ ball: b, score: calculateBallScore(robot, b, zoneBalls) }));
+                        scored.sort((a, b) => b.score - a.score);
+                        const top = scored.slice(0, AI_PLAN_HORIZON).map(item => item.ball);
+                        // Same score-based greedy picker as collect & pass.
+                        route = greedyRouteByScore(robot, startPos, top);
+                        if (route.length > 3) {
+                            let improved = true;
+                            while (improved) {
+                                improved = false;
+                                for (let i = 0; i < route.length - 2; i++) {
+                                    for (let j = i + 1; j < route.length - 1; j++) {
+                                        const d1 = distanceBetween(route[i], route[i+1]) + distanceBetween(route[j], route[j+1]);
+                                        const d2 = distanceBetween(route[i], route[j]) + distanceBetween(route[i+1], route[j+1]);
+                                        if (d2 < d1 - 1e-9) {
+                                            const segment = route.slice(i+1, j+1);
+                                            segment.reverse();
+                                            route.splice(i+1, j - i, ...segment);
+                                            improved = true;
+                                            break;
+                                        }
                                     }
+                                    if (improved) break;
                                 }
-                                if (improved) break;
                             }
                         }
                     }
@@ -1611,6 +1676,18 @@ function getAIAction(robot, alliance) {
     }
     robot.claimedBall = activeTarget || null;
     if (activeTarget) activeTarget.reservedBy = robot;
+
+    // Teammates/opponents are dynamic obstacles for path planning too, so the
+    // bot routes *around* them instead of grinding into their back.
+    navDynamic = [];
+    for (const other of activeRobots()) {
+        if (other === robot) continue;
+        navDynamic.push({
+            x: other.x + other.model.w / 2,
+            y: other.y + other.model.h / 2,
+            r: NAV_CELL + Math.max(other.model.w, other.model.h) * 0.5
+        });
+    }
 
     ensureNavGrid(robot);
     robot.navTimer += 1/60;
@@ -1683,7 +1760,7 @@ function getAIAction(robot, alliance) {
         const dx = rcx - otherCX;
         const dy = rcy - otherCY;
         const dist = Math.hypot(dx, dy);
-        if (dist >= 95 || dist < 0.001) continue;
+        if (dist >= 110 || dist < 0.001) continue;
 
         const nx = dx / dist;
         const ny = dy / dist;
@@ -1694,17 +1771,17 @@ function getAIAction(robot, alliance) {
         const closing = -(relVx * nx + relVy * ny);
         const closingBoost = closing > 0 ? 1 + Math.min(closing * 0.15, 0.9) : 0.55;
 
-        const strength = (95 - dist) / 95;
+        const strength = (110 - dist) / 110;
 
         // Radial push — spread teammates early, before they overlap.
-        repX += nx * strength * 0.75 * closingBoost;
-        repY += ny * strength * 0.75 * closingBoost;
+        repX += nx * strength * 0.85 * closingBoost;
+        repY += ny * strength * 0.85 * closingBoost;
 
         // Lateral steer so we route around them rather than through them.
         // Pick the perpendicular side that still heads us toward our goal.
         const perpX = -ny, perpY = nx;
         const side = (perpX * moveX + perpY * moveY) >= 0 ? -1 : 1;
-        const lateral = strength * 0.55 * closingBoost;
+        const lateral = strength * 0.80 * closingBoost;
         repX += perpX * side * lateral;
         repY += perpY * side * lateral;
     }
@@ -1726,22 +1803,48 @@ function getAIAction(robot, alliance) {
         if (newMag > 0) { moveX /= newMag; moveY /= newMag; }
     }
 
-    // -------- Stuck detection --------
+    // -------- Stuck detection + escape --------
+    const nowMs = Date.now();
     const posChange = Math.hypot(robot.x - robot.aiLastX, robot.y - robot.aiLastY);
-    if (posChange < 0.5) {
-        robot.aiStuckTimer += 1/60;
-    } else {
-        robot.aiStuckTimer = 0;
-    }
     robot.aiLastX = robot.x;
     robot.aiLastY = robot.y;
-    if (robot.aiStuckTimer > 0.5) {
-        const angle = Math.random() * 2 * Math.PI;
-        moveX += Math.cos(angle) * 0.5;
-        moveY += Math.sin(angle) * 0.5;
-        const m = Math.hypot(moveX, moveY);
-        if (m > 0) { moveX /= m; moveY /= m; }
+
+    if (posChange < 0.4) robot.aiStuckTimer += 1/60;
+    else robot.aiStuckTimer = Math.max(0, robot.aiStuckTimer - 1/30);
+
+    if (robot.escapeUntil && nowMs >= robot.escapeUntil) {
+        robot.escapeUntil = 0;
         robot.aiStuckTimer = 0;
+    }
+
+    if (!robot.escapeUntil && robot.aiStuckTimer > 0.4) {
+        // Back straight away from whatever we are jammed against.  A random
+        // nudge (the old behaviour) just re-fed the bot into the same robot;
+        // a committed 0.6 s reverse actually breaks the deadlock.
+        let ex = 0, ey = 0, bestD = Infinity;
+        for (const other of activeRobots()) {
+            if (other === robot) continue;
+            const ox = other.x + other.model.w / 2;
+            const oy = other.y + other.model.h / 2;
+            const dx = rcx - ox, dy = rcy - oy;
+            const d = Math.hypot(dx, dy);
+            if (d < bestD && d > 0.001) { bestD = d; ex = dx / d; ey = dy / d; }
+        }
+        if (!isFinite(bestD) || bestD > 120) {
+            // Nobody nearby — reverse out of the wall/corner we're wedged on.
+            const m = Math.hypot(moveX, moveY) || 1;
+            ex = -moveX / m; ey = -moveY / m;
+        }
+        robot.escapeDirX = ex;
+        robot.escapeDirY = ey;
+        robot.escapeUntil = nowMs + 600;
+        robot.navPath = null;   // force a fresh route once we're clear
+        robot.navGoal = null;
+    }
+
+    if (robot.escapeUntil && nowMs < robot.escapeUntil) {
+        moveX = robot.escapeDirX;
+        moveY = robot.escapeDirY;
     }
 
     // -------- Rotation --------
