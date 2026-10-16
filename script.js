@@ -58,6 +58,17 @@ const SHIFT_STATES = {
     blue: [ { redActive: true,  blueActive: false }, { redActive: false, blueActive: true  }, { redActive: true,  blueActive: false }, { redActive: false, blueActive: true  } ]
 };
 
+/* ---- Navigation state (must be declared before initField runs) ---- */
+const NAV_CELL = 16;
+const NAV_DIRS = [
+    [ 1,  0, 1        ], [ -1,  0, 1        ],
+    [ 0,  1, 1        ], [  0, -1, 1        ],
+    [ 1,  1, Math.SQRT2], [ 1, -1, Math.SQRT2],
+    [-1,  1, Math.SQRT2], [-1, -1, Math.SQRT2]
+];
+let navCols = 0, navRows = 0, navBlocked = null, navKey = '';
+const navCache = new Map();
+
 // AI Planning constants
 const AI_PLAN_HORIZON = 15;
 const AI_DENSITY_RADIUS = 150;
@@ -337,6 +348,13 @@ class Robot {
         this.setModel(modelKey);
         this.disruptedUntil = 0;
 
+        // --- navigation / path following ---
+        this.navPath = null;
+        this.navIndex = 0;
+        this.navTimer = 0;
+        this.navGoal = null;
+        this.shootReplanTimer = 0;
+
         this.aiState = 'collect';        // 'collect' | 'approach' | 'shoot'
         this.aiTargetX = null;
         this.aiTargetY = null;
@@ -361,6 +379,11 @@ class Robot {
         this.plannedTargets = [];
         this.targetIndex = 0;
         this.replanTimer = 0;
+        this.navPath = null;
+        this.navIndex = 0;
+        this.navTimer = 0;
+        this.navGoal = null;
+        this.shootReplanTimer = 0;
     }
 
     setModel(key) {
@@ -733,6 +756,8 @@ function initField() {
     let blueDepotY = FIELD_H - (82.32 * S) - (DEPOT_H / 2);
     addElement(0, redDepotY, DEPOT_W, DEPOT_H, 'depot', 'red');
     addElement(FIELD_W - DEPOT_W, blueDepotY, DEPOT_W, DEPOT_H, 'depot', 'blue');
+
+    navCache.clear(); navKey = '';
 }
 function spawnBalls() {
     balls = [];
@@ -1110,6 +1135,228 @@ function resolveCollisionRobots(r1, r2, collision) {
 }
 
 function getAIAction(robot, alliance) {
+
+    /* ============================================================
+       NAVIGATION / PATHFINDING  (A* on an inflated occupancy grid)
+       ============================================================ */
+    const NAV_CELL = 16;                 // grid resolution (world units per cell)
+    const NAV_DIRS = [
+        [ 1,  0, 1        ], [ -1,  0, 1        ],
+        [ 0,  1, 1        ], [  0, -1, 1        ],
+        [ 1,  1, Math.SQRT2], [ 1, -1, Math.SQRT2],
+        [-1,  1, Math.SQRT2], [-1, -1, Math.SQRT2]
+    ];
+
+    let navCols = 0, navRows = 0, navBlocked = null, navKey = '';
+    const navCache = new Map();          // key -> { blocked, cols, rows }
+
+    /** Radius used to inflate every obstacle so paths keep the bot clear. */
+    function getNavRadius(robot) {
+        return Math.max(robot.model.w, robot.model.h) * 0.5 + 4;
+    }
+
+    function buildNavGrid(radius, trenchBlocked) {
+        const cols = Math.ceil(FIELD_W / NAV_CELL);
+        const rows = Math.ceil(FIELD_H / NAV_CELL);
+        const blocked = new Uint8Array(cols * rows);
+
+        for (let r = 0; r < rows; r++) {
+            for (let c = 0; c < cols; c++) {
+                const cx = (c + 0.5) * NAV_CELL;
+                const cy = (r + 0.5) * NAV_CELL;
+
+                // Field walls
+                let b = (cx < radius || cx > FIELD_W - radius ||
+                         cy < radius || cy > FIELD_H - radius) ? 1 : 0;
+
+                // Static obstacles (trenches are only solid when the bot is full)
+                if (!b) {
+                    for (const o of obstacles) {
+                        if (o.type === 'trench' && !trenchBlocked) continue;
+                        if (cx > o.x - radius && cx < o.x + o.w + radius &&
+                            cy > o.y - radius && cy < o.y + o.h + radius) { b = 1; break; }
+                    }
+                }
+                blocked[r * cols + c] = b;
+            }
+        }
+        return { blocked, cols, rows };
+    }
+
+    /** Rebuild / swap in the grid that matches this robot's footprint + state. */
+    function ensureNavGrid(robot) {
+        const radius = getNavRadius(robot);
+        const trenchBlocked = robot.inventory >= 85;
+        const key = radius.toFixed(1) + '|' + (trenchBlocked ? 1 : 0);
+        if (key === navKey) return;
+
+        let grid = navCache.get(key);
+        if (!grid) {
+            grid = buildNavGrid(radius, trenchBlocked);
+            navCache.set(key, grid);
+        }
+        navBlocked = grid.blocked;
+        navCols = grid.cols;
+        navRows = grid.rows;
+        navKey = key;
+    }
+
+    function navCellFree(c, r) {
+        if (c < 0 || r < 0 || c >= navCols || r >= navRows) return false;
+        return navBlocked[r * navCols + c] === 0;
+    }
+
+    function nearestFreeCell(c0, r0, maxRadius) {
+        if (navCellFree(c0, r0)) return { c: c0, r: r0 };
+        for (let rad = 1; rad <= maxRadius; rad++) {
+            for (let dc = -rad; dc <= rad; dc++) {
+                for (let dr = -rad; dr <= rad; dr++) {
+                    if (Math.max(Math.abs(dc), Math.abs(dr)) !== rad) continue;
+                    if (navCellFree(c0 + dc, r0 + dr)) return { c: c0 + dc, r: r0 + dr };
+                }
+            }
+        }
+        return null;
+    }
+
+    /** Straight-line (grid sampled) visibility test used for path smoothing. */
+    function navLineClear(x1, y1, x2, y2) {
+        const dist = Math.hypot(x2 - x1, y2 - y1);
+        if (dist < 1e-6) return true;
+        const steps = Math.ceil(dist / (NAV_CELL * 0.5));
+        for (let i = 0; i <= steps; i++) {
+            const t = i / steps;
+            const x = x1 + (x2 - x1) * t;
+            const y = y1 + (y2 - y1) * t;
+            if (!navCellFree(Math.floor(x / NAV_CELL), Math.floor(y / NAV_CELL))) return false;
+        }
+        return true;
+    }
+
+    function simplifyPath(points, sx, sy) {
+        const out = [];
+        let curX = sx, curY = sy, i = 0;
+        while (i < points.length) {
+            let best = i;
+            for (let j = points.length - 1; j > i; j--) {
+                if (navLineClear(curX, curY, points[j].x, points[j].y)) { best = j; break; }
+            }
+            out.push(points[best]);
+            curX = points[best].x; curY = points[best].y;
+            i = best + 1;
+        }
+        return out;
+    }
+
+    /** A* over the occupancy grid. Returns world-space waypoints (goal appended last). */
+    function findNavPath(sx, sy, gx, gy) {
+        if (!navBlocked) return null;
+
+        let sc = Math.floor(sx / NAV_CELL), sr = Math.floor(sy / NAV_CELL);
+        let gc = Math.floor(gx / NAV_CELL), gr = Math.floor(gy / NAV_CELL);
+        sc = Math.max(0, Math.min(navCols - 1, sc));
+        sr = Math.max(0, Math.min(navRows - 1, sr));
+        gc = Math.max(0, Math.min(navCols - 1, gc));
+        gr = Math.max(0, Math.min(navRows - 1, gr));
+
+        if (!navCellFree(sc, sr)) { const f = nearestFreeCell(sc, sr, 5);  if (!f) return null; sc = f.c; sr = f.r; }
+        if (!navCellFree(gc, gr)) { const f = nearestFreeCell(gc, gr, 14); if (!f) return null; gc = f.c; gr = f.r; }
+
+        const startIdx = sr * navCols + sc;
+        const goalIdx  = gr * navCols + gc;
+        const cells = [];
+
+        if (startIdx === goalIdx) {
+            cells.push({ x: (sc + 0.5) * NAV_CELL, y: (sr + 0.5) * NAV_CELL });
+        } else {
+            const total = navCols * navRows;
+            const gScore   = new Float32Array(total).fill(Infinity);
+            const cameFrom = new Int32Array(total).fill(-1);
+            const closed   = new Uint8Array(total);
+
+            const heapIdx = [], heapF = [];
+            const heapPush = (idx, f) => {
+                heapIdx.push(idx); heapF.push(f);
+                let i = heapIdx.length - 1;
+                while (i > 0) {
+                    const p = (i - 1) >> 1;
+                    if (heapF[p] <= heapF[i]) break;
+                    [heapIdx[p], heapIdx[i]] = [heapIdx[i], heapIdx[p]];
+                    [heapF[p],   heapF[i]  ] = [heapF[i],   heapF[p]  ];
+                    i = p;
+                }
+            };
+            const heapPop = () => {
+                const idx = heapIdx[0];
+                const lastIdx = heapIdx.pop(), lastF = heapF.pop();
+                if (heapIdx.length) {
+                    heapIdx[0] = lastIdx; heapF[0] = lastF;
+                    let i = 0;
+                    for (;;) {
+                        const l = 2 * i + 1, r = 2 * i + 2;
+                        let m = i;
+                        if (l < heapF.length && heapF[l] < heapF[m]) m = l;
+                        if (r < heapF.length && heapF[r] < heapF[m]) m = r;
+                        if (m === i) break;
+                        [heapIdx[m], heapIdx[i]] = [heapIdx[i], heapIdx[m]];
+                        [heapF[m],   heapF[i]  ] = [heapF[i],   heapF[m]  ];
+                        i = m;
+                    }
+                }
+                return idx;
+            };
+
+            const heuristic = (c, r) => Math.hypot(c - gc, r - gr);
+            gScore[startIdx] = 0;
+            heapPush(startIdx, heuristic(sc, sr));
+
+            let found = false, guard = 0;
+            while (heapIdx.length && guard++ < 20000) {
+                const idx = heapPop();
+                if (closed[idx]) continue;
+                closed[idx] = 1;
+                if (idx === goalIdx) { found = true; break; }
+
+                const c = idx % navCols, r = (idx - c) / navCols;
+                for (const [dc, dr, cost] of NAV_DIRS) {
+                    const nc = c + dc, nr = r + dr;
+                    if (!navCellFree(nc, nr)) continue;
+                    // no corner cutting on diagonals
+                    if (dc !== 0 && dr !== 0 &&
+                        (!navCellFree(c + dc, r) || !navCellFree(c, r + dr))) continue;
+
+                    const nIdx = nr * navCols + nc;
+                    if (closed[nIdx]) continue;
+
+                    const tentative = gScore[idx] + cost;
+                    if (tentative < gScore[nIdx]) {
+                        gScore[nIdx] = tentative;
+                        cameFrom[nIdx] = idx;
+                        heapPush(nIdx, tentative + heuristic(nc, nr));
+                    }
+                }
+            }
+
+            if (!found) return null;
+
+            const rev = [];
+            let cur = goalIdx;
+            while (cur !== -1) {
+                const c = cur % navCols, r = (cur - c) / navCols;
+                rev.push({ x: (c + 0.5) * NAV_CELL, y: (r + 0.5) * NAV_CELL });
+                cur = cameFrom[cur];
+            }
+            rev.reverse();
+            cells.push(...rev);
+        }
+
+        // Always finish on the exact goal so the bot still drives onto its target.
+        const last = cells[cells.length - 1];
+        if (Math.hypot(last.x - gx, last.y - gy) > 1) cells.push({ x: gx, y: gy });
+        return cells;
+    }
+
+
     if (!matchRunning || startCountdown > 0 || endCooldown > 0) {
         return { moveX: 0, moveY: 0, rotInput: 0, act: false, toggleIn: false };
     }
@@ -1175,8 +1422,8 @@ function getAIAction(robot, alliance) {
 
     else if (state === 'approach hub') {
         if (!hubActive) {
-            state = 'approach mid';
-            robot.aiState = 'approach mid';
+            state = 'pass';
+            robot.aiState = 'pass';
         }
         if (isShootingZone) {
             state = 'shoot';
@@ -1189,8 +1436,8 @@ function getAIAction(robot, alliance) {
 
     else if (state === 'approach mid') {
         if (hubActive) {
-            state = 'approach hub';
-            robot.aiState = 'approach hub';
+            state = 'collect';
+            robot.aiState = 'collect';
         }
         if (!isShootingZone) {
             state = 'pass';
@@ -1209,13 +1456,6 @@ function getAIAction(robot, alliance) {
             robot.aiShootTimer = 0;
         }
 
-        if (!isShootingZone) {
-            state = 'approach';
-            robot.aiState = 'approach';
-            robot.aiShootTimer = 0;
-            robot.shootTargets = [];
-            robot.shootTargetIdx = 0;
-        }
 
         act = true;
 
@@ -1245,7 +1485,7 @@ function getAIAction(robot, alliance) {
             robot.shootTargets = [];
         }
 
-        if (robot.inventory === 0 || hubActive) {
+        if (robot.inventory === 0 || !hubActive) {
             state = 'collect';
             robot.aiState = 'collect';
             robot.aiShootTimer = 0;
@@ -1254,8 +1494,8 @@ function getAIAction(robot, alliance) {
         }
 
         if (!isShootingZone) {
-            state = 'approach';
-            robot.aiState = 'approach';
+            state = 'approach hub';
+            robot.aiState = 'approach hub';
             robot.aiShootTimer = 0;
             robot.shootTargets = [];
             robot.shootTargetIdx = 0;
@@ -1353,30 +1593,40 @@ function getAIAction(robot, alliance) {
         }
     }
 
-    // -------- Obstacle avoidance --------
-    let repX = 0, repY = 0;
-    const avoidRadius = 250;
-    const repStrength = 0.9;
-    for (const o of obstacles) {
-        if (o.type === 'trench') continue;
-        const cx = o.x + o.w / 2;
-        const cy = o.y + o.h / 2;
-        const dx = rcx - cx;
-        const dy = rcy - cy;
-        const dist = Math.hypot(dx, dy);
-        if (dist < avoidRadius && dist > 0) {
-            const strength = (avoidRadius - dist) / avoidRadius;
-            repX += (dx / dist) * strength * repStrength;
-            repY += (dy / dist) * strength * repStrength;
-        }
-    }
-    const wallMargin = 50;
-    if (rcx < wallMargin) repX += (wallMargin - rcx) / wallMargin * 1.5;
-    if (rcx > FIELD_W - wallMargin) repX -= (rcx - (FIELD_W - wallMargin)) / wallMargin * 1.5;
-    if (rcy < wallMargin) repY += (wallMargin - rcy) / wallMargin * 1.5;
-    if (rcy > FIELD_H - wallMargin) repY -= (rcy - (FIELD_H - wallMargin)) / wallMargin * 1.5;
+    // -------- Path planning around static obstacles --------
+    ensureNavGrid(robot);
+    robot.navTimer += 1/60;
 
-    // -------- Movement vector --------
+    const goalMoved = !robot.navGoal ||
+        Math.hypot(targetX - robot.navGoal.x, targetY - robot.navGoal.y) > 45;
+
+    if (goalMoved || robot.navTimer > 0.6 || !robot.navPath || robot.navPath.length === 0) {
+        const raw = findNavPath(rcx, rcy, targetX, targetY);
+        if (raw && raw.length) {
+            robot.navPath  = simplifyPath(raw, rcx, rcy);
+            robot.navIndex = 0;
+            robot.navGoal  = { x: targetX, y: targetY };
+        } else {
+            robot.navPath = null;   // no route → fall back to reactive steering
+            robot.navGoal = null;
+        }
+        robot.navTimer = 0;
+    }
+
+    // Follow the current waypoint (skip intermediate ones we've already passed)
+    let usingPath = false;
+    if (robot.navPath && robot.navPath.length) {
+        while (robot.navIndex < robot.navPath.length - 1 &&
+               Math.hypot(robot.navPath[robot.navIndex].x - rcx,
+                          robot.navPath[robot.navIndex].y - rcy) < 24) {
+            robot.navIndex++;
+        }
+        targetX = robot.navPath[robot.navIndex].x;
+        targetY = robot.navPath[robot.navIndex].y;
+        usingPath = true;
+    }
+
+    // -------- Steering --------
     let moveX = targetX - rcx;
     let moveY = targetY - rcy;
     let distTarget = Math.hypot(moveX, moveY);
@@ -1384,9 +1634,51 @@ function getAIAction(robot, alliance) {
         moveX /= distTarget;
         moveY /= distTarget;
     }
+
+    let repX = 0, repY = 0;
+
+    // Soft repulsion is only the *fallback* when no path could be planned.
+    if (!usingPath) {
+        const avoidRadius = 250;
+        const repStrength = 0.9;
+        for (const o of obstacles) {
+            if (o.type === 'trench' && robot.inventory < 85) continue;
+            const cx = o.x + o.w / 2;
+            const cy = o.y + o.h / 2;
+            const dx = rcx - cx;
+            const dy = rcy - cy;
+            const dist = Math.hypot(dx, dy);
+            if (dist < avoidRadius && dist > 0) {
+                const strength = (avoidRadius - dist) / avoidRadius;
+                repX += (dx / dist) * strength * repStrength;
+                repY += (dy / dist) * strength * repStrength;
+            }
+        }
+    }
+
+    // Always push away from the opposing robot so they don't lock together.
+    const otherBotRef = robot === botRed ? botBlue : botRed;
+    if (p2Enabled && otherBotRef && otherBotRef.x > -500) {
+        const dx = rcx - (otherBotRef.x + otherBotRef.model.w / 2);
+        const dy = rcy - (otherBotRef.y + otherBotRef.model.h / 2);
+        const dist = Math.hypot(dx, dy);
+        if (dist < 70 && dist > 0.001) {
+            const strength = (70 - dist) / 70;
+            repX += (dx / dist) * strength * 0.9;
+            repY += (dy / dist) * strength * 0.9;
+        }
+    }
+
+    // Wall repulsion (lighter when a path already keeps the bot clear of walls)
+    const wallMargin = usingPath ? 30 : 50;
+    if (rcx < wallMargin) repX += (wallMargin - rcx) / wallMargin * 1.5;
+    if (rcx > FIELD_W - wallMargin) repX -= (rcx - (FIELD_W - wallMargin)) / wallMargin * 1.5;
+    if (rcy < wallMargin) repY += (wallMargin - rcy) / wallMargin * 1.5;
+    if (rcy > FIELD_H - wallMargin) repY -= (rcy - (FIELD_H - wallMargin)) / wallMargin * 1.5;
+
     const repMag = Math.hypot(repX, repY);
     if (repMag > 0) {
-        const maxRep = 0.8;
+        const maxRep = usingPath ? 0.35 : 0.8;
         const repScale = Math.min(maxRep, repMag * 0.4);
         moveX += repX * repScale;
         moveY += repY * repScale;
