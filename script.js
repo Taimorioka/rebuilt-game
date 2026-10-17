@@ -1437,17 +1437,17 @@ function getAIAction(robot, alliance) {
 
     // -------- State machine --------
     if (state === 'collect') {
-        if (robot.inventory >= robot.model.capacity * 0.75 && hubActive && hub) {
-            state = 'approach hub';
-            robot.aiState = 'approach hub';
+        if (hubActive && isShootingZone && robot.inventory >= robot.model.capacity) {
+            state = 'shoot';
+            robot.aiState = 'shoot';
             robot.aiShootTimer = 0;
         } else if (robot.inventory >= robot.model.capacity && !hubActive) {
             state = 'approach mid';
             robot.aiState = 'approach mid';
             robot.aiShootTimer = 0;
-        } else if(hubActive && isShootingZone && robot.inventory >= robot.model.capacity) {
-            state = 'shoot';
-            robot.aiState = 'shoot';
+        } else if(robot.inventory >= robot.model.capacity * 0.75 && hubActive && hub) {
+            state = 'approach hub';
+            robot.aiState = 'approach hub';
             robot.aiShootTimer = 0;
         } else {
             const now = Date.now() / 1000;
